@@ -94,7 +94,6 @@ services:
       - /api/v1/tta/upload
       - /api/v1/tta/ingest-path
       - /api/v1/tta/progress
-      - /api/v1/migrate/*
     settings:
       upload_dir: uploads
       # Raw payloads kept for replay and audit.
@@ -261,6 +260,7 @@ services:
       - /api/v1/manual/*
       - /api/v1/manual
       - /api/v1/tta/*
+      - /api/v1/migrate/*
     settings:
       dashboard_ttl_s: 600
       # Smart-Truck's consignor scoping (multi-tenant by consignor).

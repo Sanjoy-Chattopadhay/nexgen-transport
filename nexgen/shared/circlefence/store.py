@@ -205,6 +205,9 @@ def ensure_schema(conn=None) -> dict:
     information_schema first rather than swallowing the duplicate-column error
     -- which would also swallow a genuine failure.
     """
+    # NexGen: every table is created by the migrations (python -m nexgen migrate);
+    # tta_trips and the other feed tables are read-only views in this schema.
+    return {"status": "ok", "note": "tables are created by NexGen migrations"}
     own = conn is None
     conn = conn or get_connection()
     created = {"tables": [], "columns": []}

@@ -192,8 +192,9 @@ class Service:
         self._server = None   # uvicorn.Server, set by run()
 
     # -- composition -----------------------------------------------------
-    def include(self, router, prefix: str = "") -> None:
-        self._routers.append((router, prefix))
+    def include(self, router, prefix: str = "", **kwargs) -> None:
+        """Mount a router; extra kwargs (dependencies, tags) go to include_router."""
+        self._routers.append((router, prefix, kwargs))
 
     def worker(self, name: str, description: str = "") -> WorkerRole:
         spec = self.spec.role(name)
@@ -366,8 +367,8 @@ class Service:
             return {"stopping": svc.name}
 
         app.add_middleware(GZipMiddleware, minimum_size=1024)
-        for router, prefix in self._routers:
-            app.include_router(router, prefix=prefix)
+        for router, prefix, kwargs in self._routers:
+            app.include_router(router, prefix=prefix, **kwargs)
         return app
 
     def _exit_soon(self) -> None:

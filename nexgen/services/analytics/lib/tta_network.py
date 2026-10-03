@@ -142,6 +142,11 @@ _GAP_SUBQ = f"""(
 
 
 def refresh_gps_ping_counts(conn) -> int:
+    """NexGen: the fleet service keeps tta_trips.i_gps_ping_count exact as it
+    stores fixes (trip.i_gps_ping_count), so there is nothing to reconcile here
+    -- and tta_trips is a read-only view in this schema."""
+    return {"status": "skipped", "reason": "kept by the fleet service"}
+    # Smart-Truck's original body follows, unreachable:
     """Reconcile tta_trips.i_gps_ping_count from tta_trip_gps in one set-based
     pass. Ingest maintains it incrementally; this is a safety-net rebuild."""
     with conn.cursor() as cur:

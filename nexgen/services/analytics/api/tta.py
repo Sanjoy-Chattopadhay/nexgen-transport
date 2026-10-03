@@ -29,104 +29,11 @@ from nexgen.shared.common.consignor import (
     base_clause,
     enforce_tta_trip_scope,
 )
-from nexgen.shared.feed.tta import (
-    get_tta_progress,
-    ingest_tta_file,
-    run_tta_schema,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tta", tags=["TTA Trips & GPS"])
 
 TTA_TABLES = ["consignors", "tta_trips", "tta_trip_metrics", "tta_trip_gps"]
-
-
-@router.post("/schema")
-def create_tta_schema(conn=Depends(get_db)):
-    """Create TTA tables (idempotent — safe to call multiple times)."""
-    return run_tta_schema(conn)
-
-
-@router.post("/upload")
-async def upload_tta_file(file: UploadFile = File(...), conn=Depends(get_db)):
-    """Upload a TTA export (sectioned text or JSON) and ingest it."""
-    if not file.filename:
-        raise HTTPException(400, "No file provided")
-
-    upload_dir = Path(settings.UPLOAD_DIR) / "tta"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{datetime.now():%Y%m%d_%H%M%S}_{os.path.basename(file.filename)}"
-    dest = upload_dir / stored_name
-
-    content = await file.read()
-    dest.write_bytes(content)
-
-    # Track in the existing file_uploads table (existing upload procedure)
-    ext = (os.path.splitext(file.filename)[1].lstrip(".") or "json")[:10]
-    with conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO file_uploads
-               (original_filename, stored_filename, file_type, file_size_bytes,
-                upload_type, status, processing_started_at)
-               VALUES (%s, %s, %s, %s, 'tta_json', 'processing', NOW())""",
-            (file.filename, str(dest), ext, len(content)),
-        )
-        upload_id = cur.lastrowid
-    conn.commit()
-
-    try:
-        result = ingest_tta_file(conn, str(dest))
-        from nexgen.services.analytics.lib.tta_dashboard import invalidate_cache
-        invalidate_cache()
-        with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE file_uploads
-                   SET status='completed', total_records=%s, records_processed=%s,
-                       records_failed=%s, processing_completed_at=NOW()
-                   WHERE id=%s""",
-                (
-                    result.get("gps_inserted", 0) + result.get("gps_skipped", 0),
-                    result.get("gps_inserted", 0),
-                    len(result.get("errors", [])),
-                    upload_id,
-                ),
-            )
-        conn.commit()
-        result["upload_id"] = upload_id
-        return result
-    except Exception as e:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE file_uploads SET status='failed', error_summary=JSON_OBJECT('error', %s) WHERE id=%s",
-                (str(e)[:500], upload_id),
-            )
-        conn.commit()
-        raise HTTPException(422, f"Ingestion failed: {e}")
-
-
-class IngestPathBody(BaseModel):
-    path: str
-
-
-@router.post("/ingest-path")
-def ingest_from_path(body: IngestPathBody, conn=Depends(get_db)):
-    """Ingest a TTA export file already present on the server (dev helper)."""
-    p = Path(body.path)
-    if not p.exists():
-        raise HTTPException(404, f"File not found: {p}")
-    try:
-        result = ingest_tta_file(conn, str(p))
-        from nexgen.services.analytics.lib.tta_dashboard import invalidate_cache
-        invalidate_cache()
-        return result
-    except Exception as e:
-        raise HTTPException(422, f"Ingestion failed: {e}")
-
-
-@router.get("/progress")
-def tta_progress():
-    """Poll ingestion progress."""
-    return get_tta_progress()
 
 
 @router.get("/status")
@@ -140,16 +47,18 @@ def tta_status(scope: ConsignorScope = Depends(consignor_scope), conn=Depends(ge
         "tta_trips": "SELECT COUNT(*) AS cnt FROM tta_trips WHERE i_cnr_id = %s",
         "tta_trip_metrics": ("SELECT COUNT(*) AS cnt FROM tta_trip_metrics m "
                              "JOIN tta_trips t ON t.i_trip_no = m.i_trip_no WHERE t.i_cnr_id = %s"),
-        "tta_trip_gps": ("SELECT COUNT(*) AS cnt FROM tta_trip_gps g "
-                         "JOIN tta_trips t ON t.i_trip_no = g.i_trip_no WHERE t.i_cnr_id = %s"),
+        # NexGen: the fleet service keeps each trip's fix count exact, so the
+        # count is a sum over trips, not a scan of every GPS row.
+        "tta_trip_gps": "SELECT COALESCE(SUM(i_gps_ping_count), 0) AS cnt FROM tta_trips WHERE i_cnr_id = %s",
     }
+    unscoped_sql = {"tta_trip_gps": "SELECT COALESCE(SUM(i_gps_ping_count), 0) AS cnt FROM tta_trips"}
     with conn.cursor() as cur:
         for table in TTA_TABLES:
             try:
                 if scope.active:
                     cur.execute(scoped_sql[table], (scope.id,))
                 else:
-                    cur.execute(f"SELECT COUNT(*) AS cnt FROM {table}")
+                    cur.execute(unscoped_sql.get(table, f"SELECT COUNT(*) AS cnt FROM {table}"))
                 counts[table] = cur.fetchone()["cnt"]
             except Exception:
                 counts[table] = -1
@@ -558,8 +467,8 @@ def waypoints_detail(waypoint_id: int, scope: ConsignorScope = Depends(consignor
 def waypoints_refresh(conn=Depends(get_db)):
     """Rebuild the waypoint registry from GPS data. Runs under the shared
     waypoint lock so it never overlaps the scheduled rebuild."""
-    from nexgen.services.ingestion.tms.tta_api_sync import run_waypoint_refresh
-    return run_waypoint_refresh(conn)
+    from nexgen.services.analytics.lib.registry import run_waypoint_refresh
+    return run_waypoint_refresh()
 
 
 # ----------------------------------------------------------------------
@@ -602,44 +511,13 @@ def analytics_refresh():
     Heavy batch op (can take minutes on a large GPS table): runs on a dedicated
     long-timeout connection, not the request connection."""
     from nexgen.shared.legacy_db import get_connection
-    from nexgen.services.analytics.lib.tta_network import (
-        refresh_gps_ping_counts, refresh_network_aggregates,
-    )
+    from nexgen.services.analytics.lib.tta_network import refresh_network_aggregates
     conn = get_connection(read_timeout=3600, write_timeout=3600)
     try:
-        ping_counts = refresh_gps_ping_counts(conn)
         net = refresh_network_aggregates(conn)
-        return {"ping_counts_reconciled": ping_counts, "network_aggregates": net}
+        return {"ping_counts_reconciled": "kept by the fleet service", "network_aggregates": net}
     finally:
         conn.close()
-
-
-# ----------------------------------------------------------------------
-# Data lifecycle (backup / retention purge)
-# ----------------------------------------------------------------------
-
-@router.get("/maintenance/status")
-def maintenance_status_ep(conn=Depends(get_db)):
-    from nexgen.services.analytics.lib.db_maintenance import maintenance_status
-    return maintenance_status(conn)
-
-
-@router.post("/maintenance/backup")
-def maintenance_backup():
-    from nexgen.services.analytics.lib.db_maintenance import run_backup
-    try:
-        return run_backup()
-    except Exception as e:
-        raise HTTPException(500, f"Backup failed: {e}")
-
-
-@router.post("/maintenance/purge")
-def maintenance_purge(dry_run: bool = True, retention_days: int | None = None,
-                      conn=Depends(get_db)):
-    """Archive + delete GPS pings of trips older than the retention window.
-    Defaults to dry_run=true — call with dry_run=false to actually purge."""
-    from nexgen.services.analytics.lib.db_maintenance import run_gps_purge
-    return run_gps_purge(conn, retention_days, dry_run)
 
 
 @router.get("/trips/{trip_no}/gps")

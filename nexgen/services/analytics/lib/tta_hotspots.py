@@ -106,6 +106,9 @@ def run_hotspot_schema(conn) -> dict:
     CREATE TABLE in half. Safe here because the file contains no string
     literals — it is pure DDL.
     """
+    # NexGen: every table is created by the migrations (python -m nexgen migrate);
+    # tta_trips and the other feed tables are read-only views in this schema.
+    return {"status": "ok", "note": "tables are created by NexGen migrations"}
     sql_path = PROJECT_ROOT / "migrations" / "schema_hotspots.sql"
     sql = sql_path.read_text(encoding="utf-8")
     sql = "\n".join(ln.split("--", 1)[0] for ln in sql.splitlines())

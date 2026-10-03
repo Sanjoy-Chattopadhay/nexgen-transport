@@ -138,6 +138,9 @@ def safe_int(val):
 
 def run_schema(conn):
     """Execute schema.sql to create all tables. Idempotent (IF NOT EXISTS)."""
+    # NexGen: every table is created by the migrations (python -m nexgen migrate);
+    # tta_trips and the other feed tables are read-only views in this schema.
+    return {"status": "ok", "note": "tables are created by NexGen migrations"}
     schema_path = PROJECT_ROOT / "migrations" / "schema.sql"
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
