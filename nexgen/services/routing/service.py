@@ -30,10 +30,16 @@ def _mode() -> str:
     return mode
 
 
-def _bump_version(conn) -> None:
+def _bump_version(conn, run_id: int, trip_nos) -> None:
+    """Move the routes pages' cache version and announce the new figures, together."""
+    from nexgen.core.events import publish
+    from nexgen.core.tenancy import current_tenant_id
     with conn.cursor() as cur:
         cur.execute("INSERT INTO route_state (s_key, s_value) VALUES ('data_version', '1') "
                     "ON DUPLICATE KEY UPDATE s_value = s_value + 1")
+    publish(conn, "route.analysed",
+            {"run_id": run_id, "trip_nos": None if trip_nos is None else sorted(int(t) for t in trip_nos)},
+            tenant_id=current_tenant_id(), source="routing")
     conn.commit()
 
 
@@ -45,7 +51,7 @@ def analyse(trip_nos=None, run_id=None) -> dict:
         return {"status": "idle", "reason": "no published geofence run yet"}
     with connect("routing") as conn:
         out = analysis.analyse_trips(conn, run_id, trip_nos, mode=_mode())
-        _bump_version(conn)
+        _bump_version(conn, run_id, trip_nos)
     return {"run_id": run_id, "trips": "all" if trip_nos is None else len(trip_nos), **(out or {})}
 
 

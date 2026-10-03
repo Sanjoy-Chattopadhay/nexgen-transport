@@ -123,7 +123,15 @@ async def _internal(request: Request, name: str, method: str, path: str, params:
             raise HTTPException(503, f"{svc.spec.title} did not answer: {exc}") from exc
     if r.status_code >= 400:
         raise HTTPException(r.status_code, r.text[:500])
+    # The overview shows roles, jobs and consumers from the last health poll;
+    # take a fresh one so the page sees the change it just asked for.
+    await _blocking(_refresh_health, svc)
     return r.json()
+
+
+def _refresh_health(svc) -> None:
+    with httpx.Client() as client:
+        svc.poll_health(client)
 
 
 @router.post("/services/{name}/roles/{role}/{action}")

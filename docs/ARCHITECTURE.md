@@ -47,10 +47,10 @@ stopped module stays stopped across restarts.
 |---|---|---|---|
 | platform | tenants, settings overrides + audit, reference data (`nx_platform`, `nx_ref`) | api, ops (backups, trims) | — |
 | ingestion | connections, lanes, watermarks, sync runs, data gaps, batches, landing rows, raw payloads, uploads, imports (`nx_ingest`) | api, worker | TMS API, files, legacy DBs (read-only) |
-| fleet | dimensions, trips, provider metrics, `gps_fix`, trails, stops, gaps, speed events, consignment groups (`nx_fleet`) | api, processor | ingestion's landing views |
-| geofence | sites, fences, runs, crossings, visits, violations, physical ledger, phases, rollups, live state; Smart-Truck's circle fences and origin-exit results (`nx_geo`) | api, detector, live | fleet contract views |
-| routing | plans, trip routes, deviations, cost, weather cache (`nx_route`) | api, worker | fleet + geofence contracts |
-| analytics | KPI marts, every Smart-Truck analysis table, family-A compatibility marts, summaries (`nx_analytics`) | api, kpi | every owner's contract views |
+| fleet | dimensions (vehicles, devices, drivers, transporters, consignees, locations, waypoints), trips, provider metrics, source records, `gps_fix`, per-trip GPS windows and distance overrides, processed batches (`nx_fleet`) | api, processor | ingestion's batch and payload views |
+| geofence | the pre-filter and fit (fitted trails, stops, gaps), sites, fences, runs, crossings, visits, violations, physical ledger, phases, rollups, live state; Smart-Truck's circle fences and origin-exit results (`nx_geo`) | api, detector, live | fleet contract views |
+| routing | plans, trip routes, deviations, cost (`nx_route`) | api, worker | fleet + geofence contracts |
+| analytics | every Smart-Truck analysis table (network, waypoint, speed, hotspot aggregates; plant-delay and weather caches; settings), the historic trip store and its driver / vehicle / route / customer / day summaries (`nx_analytics`) | api, kpi | every owner's contract views |
 | ml | models, predictions (`nx_ml`) | api, trainer | analytics contract views |
 
 ### Routing the legacy URLs
@@ -65,17 +65,24 @@ under `/api/v1/geo/*` (its paths collided with Smart-Truck's `/trips`,
 
 Three layers:
 
-* **Raw** (ingestion): every source record as received — landing rows for
-  processing (7 days after use) and compressed payloads (90 days) for replay.
-* **Clean** (fleet, geofence, routing): normalised, deduplicated, fitted.
-* **KPI** (analytics): precomputed figures the pages read, kept current by the
-  kpi worker from events, proven nightly against a full recompute.
+* **Raw** (ingestion): every source block as received — a batch row and one
+  zlib-compressed payload per trip, kept 90 days so any batch can be replayed
+  (`ingest.batch.landed` → the fleet processor).
+* **Clean** (fleet, geofence, routing): normalised and deduplicated by fleet;
+  pre-filtered and fitted by geofence, where the engine that needs it lives.
+* **KPI** (analytics): the summaries and aggregates the pages read, kept
+  current by the kpi worker from events (each changed trip's drivers,
+  vehicles, routes, customers and days) and by its schedules. Dedicated
+  `kpi_trip` / `kpi_day` marts with a nightly full-recompute proof are the
+  next step; they are not built yet.
 
 ### GPS
 
 One row per physical fix, keyed `(i_tenant_id, i_vehicle_id, dt_fix, i_seq)`,
 partitioned by month, names replaced by ids (waypoint and status
-dictionaries), coordinates as degrees × 10⁷ in 4-byte ints. Measured on
+dictionaries), coordinates as exact `DECIMAL(10,8)` / `DECIMAL(11,8)` — 3.4% of
+the feed's values carry eight decimals, which a degrees × 10⁷ integer would
+round. Measured on
 3 October 2026: today's two copies cost 717 bytes per physical fix; 12% of
 Smart-Truck's rows repeat a fix for another consignment on the same truck, and
 across all 562,808 repeats only the per-trip cumulative distance differs.
@@ -98,19 +105,18 @@ the normalised storage. The legacy writers are replaced by the new pipeline
 
 | Event | From | Consumed by |
 |---|---|---|
-| `ingest.batch.landed` | ingestion | fleet processor |
-| `ingest.master.landed` | ingestion | geofence, fleet |
-| `fleet.fixes.stored` | fleet | geofence live |
-| `fleet.trips.changed` | fleet | analytics, routing, ml |
-| `fleet.trails.ready` | fleet | geofence detector, routing, analytics |
-| `fleet.dimensions.changed` | fleet | geofence, analytics, ml |
-| `geo.fences.changed` | geofence | geofence detector, analytics |
-| `geo.visits.changed` | geofence | analytics, routing |
-| `geo.live.event` | geofence live | web live stream |
-| `route.analysed` | routing | analytics |
-| `ml.predictions.ready` | ml | analytics |
-| `analytics.kpis.published` | analytics | caches, web |
-| `platform.config.changed` | platform | every service |
+| `ingest.batch.landed` | ingestion (sync lanes, uploads, file ingest) | fleet processor |
+| `fleet.trips.changed` | fleet processor | analytics kpi (historic store + summaries for those trips, caches) |
+| `fleet.fixes.stored` | fleet processor | geofence detector (requests a refresh pass) |
+| `geo.visits.changed` | geofence detector (each refresh pass) | routing worker (re-judges those journeys), analytics caches |
+| `route.analysed` | routing worker | analytics caches |
+| `platform.config.changed` | platform (tenant setting saved or reset) | none yet: services re-read tenant settings within 5 s |
+
+Every consumer is idempotent and keeps its own offset in `nx_events`
+(at-least-once delivery; an id gap is waited on for 60 s before it is passed).
+Reserved for the modules that will publish them: `ml.predictions.ready` (the
+analytics caches consumer already listens), `geo.fences.changed`,
+`fleet.dimensions.changed`.
 
 ## Developer page
 
@@ -120,3 +126,28 @@ health, pid, memory/CPU, uptime and restarts; start / stop / restart per
 service and per role; jobs with last runs and "run now"; event consumers with
 lag, errors, retry and skip; logs; schemas, table sizes and migrations; the
 effective configuration with secrets masked.
+
+## Web app
+
+One React app (`web/`), served by the gateway from `web/dist`.
+
+* `src/core/` — the shell: one sidebar organised by function (`nav.ts`),
+  section tabs, the trip workspace, the developer page, theme and type scale.
+* `src/modules/analytics/` — the fleet-analytics pages (dashboard, trips,
+  analytics, transporters, ML, partners, network, data sync, manual), ported
+  from Smart-Truck at their original paths.
+* `src/modules/geofence/` — the fence pages (day by day, live map, fences,
+  alerts, stops, fence timelines, routes against plans, uploads, data
+  quality, method), ported from Geo-Fencing under `/geo/...`.
+
+A section owns every view of its subject from both modules, as tabs (Vehicles:
+the fleet view and the fence-activity view). A trip's three views — summary,
+journey analysis, fences / phases / route — are tabs of one trip workspace,
+and the trips opened in a browser tab stay open beside each other.
+
+Every map draws India from the official state geometry
+(`/api/v1/geo/map/states`); no tile layer anywhere. Body text is 14 px and the
+smallest text 13 px (`core/index.css`); chart text is 12 px at least. Charts
+take their colours from the theme (`PALETTE`, or `tc(hex)` for code written
+against Tailwind's hex values), so `teal` and `classic` both apply everywhere;
+switching theme reloads the page.

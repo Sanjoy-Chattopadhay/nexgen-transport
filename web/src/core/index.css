@@ -1,0 +1,241 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+/* ---------------------------------------------------------------------------
+   Type scale -- one readable size.
+
+   Body text is 14 px (text-sm) and the smallest text anywhere is 13 px
+   (text-xs). The two legacy UIs used eight sizes between 8 and 13 px for
+   labels, captions and badges; every one of them now resolves to text-xs, and
+   chart ticks and labels drawn in SVG are 12 px at the least. Headings keep
+   their larger steps so a page still has a hierarchy.
+   --------------------------------------------------------------------------- */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.45;
+}
+
+/* ---------------------------------------------------------------------------
+   Themes -- see src/core/theme.ts.
+
+   Semantic tokens first, with the classic values. Tailwind turns each into
+   utilities: bg-panel, bg-field, text-on-accent.
+   --------------------------------------------------------------------------- */
+@theme {
+  --color-panel: #111827;      /* sidebar and other secondary surfaces */
+  --color-field: #1f2937;      /* inputs and selects */
+  --color-on-accent: #ffffff;  /* ink on a filled accent */
+  --color-ground: #0a0f1a;     /* map ground outside India */
+}
+
+/* Teal: the charcoal-and-teal palette. Tailwind's own colour variables are
+   re-pointed, so every existing class follows without being rewritten.
+
+     main background   #0F1115   gray-950
+     secondary bg      #151922   panel, field
+     cards             #1B202B   gray-900
+     card hover        #222936   gray-800 at 50% over a card
+     border            #28303D   gray-800
+     primary text      #E8ECF2   white, gray-100
+     secondary text    #9AA4B2   gray-400
+     muted text        #687386   gray-500
+     primary accent    #5EEAD4   blue-400 / blue-600
+     secondary accent  #67E8F9   cyan-400
+     success           #6EE7B7   emerald-400
+     warning           #FCD34D   amber-400
+     error             #FCA5A5   red-400                                      */
+:root[data-theme='teal'] {
+  --color-white: #E8ECF2;
+
+  --color-gray-50: #F4F6F9;
+  --color-gray-100: #E8ECF2;
+  --color-gray-200: #DCE1E9;
+  --color-gray-300: #C2C9D4;
+  --color-gray-400: #9AA4B2;
+  --color-gray-500: #687386;
+  --color-gray-600: #566073;
+  --color-gray-700: #343C4B;
+  --color-gray-800: #28303D;
+  --color-gray-900: #1B202B;
+  --color-gray-950: #0F1115;
+
+  /* "blue" is the accent role throughout the components, so it becomes teal */
+  --color-blue-300: #99F6E4;
+  --color-blue-400: #5EEAD4;
+  --color-blue-500: #2DD4BF;
+  --color-blue-600: #5EEAD4;
+  --color-blue-700: #14B8A6;
+  --color-blue-800: #115E59;
+  --color-blue-900: #134E4A;
+  --color-blue-950: #0C2927;
+
+  --color-cyan-300: #A5F3FC;
+  --color-cyan-400: #67E8F9;
+  --color-cyan-500: #22D3EE;
+  --color-cyan-900: #164E63;
+  --color-cyan-950: #0B2730;
+
+  --color-emerald-300: #A7F3D0;
+  --color-emerald-400: #6EE7B7;
+  --color-emerald-500: #34D399;
+  --color-emerald-900: #064E3B;
+  --color-emerald-950: #0A261E;
+
+  --color-amber-300: #FDE68A;
+  --color-amber-400: #FCD34D;
+  --color-amber-500: #FBBF24;
+  --color-amber-600: #D97706;
+  --color-amber-700: #92400E;
+  --color-amber-900: #78350F;
+  --color-amber-950: #2A1F0A;
+
+  --color-red-300: #FECACA;
+  --color-red-400: #FCA5A5;
+  --color-red-500: #F87171;
+  --color-red-900: #7F1D1D;
+  --color-red-950: #2B1518;
+
+  --color-purple-300: #DDD6FE;
+  --color-purple-400: #C4B5FD;
+  --color-purple-500: #A78BFA;
+  --color-purple-900: #4C1D95;
+  --color-purple-950: #1D1630;
+
+  --color-panel: #151922;
+  --color-field: #151922;
+  --color-on-accent: #0F1115;
+  --color-ground: #0F1115;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background-color: var(--color-gray-950);
+  color: var(--color-gray-100);
+  margin: 0;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--color-gray-900); }
+::-webkit-scrollbar-thumb { background: var(--color-gray-700); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-gray-600); }
+
+/* Maps draw India from its own geometry on an empty ground -- no tile
+   provider, so no foreign depiction of the border and no network needed. */
+.leaflet-container {
+  background: var(--color-ground);
+  font-family: inherit;
+}
+.leaflet-control-zoom a,
+.leaflet-control-layers {
+  background: var(--color-gray-900) !important;
+  color: var(--color-gray-300) !important;
+  border-color: var(--color-gray-800) !important;
+}
+.leaflet-control-zoom a:hover { background: var(--color-gray-800) !important; }
+.leaflet-tooltip.geo-tip {
+  background: var(--color-panel);
+  border: 1px solid var(--color-gray-700);
+  color: var(--color-gray-200);
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .4);
+}
+.leaflet-tooltip.geo-tip::before { display: none; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background: var(--color-panel);
+  color: var(--color-gray-200);
+  border: 1px solid var(--color-gray-700);
+}
+.leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+.leaflet-control-attribution { display: none; }
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+.animate-fade-in { animation: fade-in 0.25s ease-out both; }
+
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.animate-pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+/* The ML and analytics pages' entrance animations. */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 20px 4px color-mix(in srgb, var(--color-blue-500) 15%, transparent); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes count-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes progress-fill { from { width: 0%; } }
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+.animate-fade-in-up { animation: fade-in-up 0.5s ease-out both; }
+.animate-slide-in-right { animation: slide-in-right 0.5s ease-out both; }
+.animate-slide-in-left { animation: slide-in-left 0.28s ease-out both; }
+.animate-scale-in { animation: scale-in 0.4s ease-out both; }
+.animate-pulse-glow { animation: pulse-glow 2.5s ease-in-out infinite; }
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 33%, rgba(255,255,255,0.05) 50%, transparent 66%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+.animate-count-up { animation: count-up 0.6s ease-out both; }
+.animate-progress-fill { animation: progress-fill 1s ease-out both; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+.stagger-6 { animation-delay: 0.3s; }
+.stagger-7 { animation-delay: 0.35s; }
+.stagger-8 { animation-delay: 0.4s; }
+.stagger-9 { animation-delay: 0.45s; }
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* The guide on How It Works: its authored text carries a little markup. */
+.guide-rich b { color: var(--color-gray-200); font-weight: 600; }
+.guide-rich i, .guide-rich em { font-style: italic; }
+.guide-rich code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.9em;
+  color: var(--color-gray-300);
+  overflow-wrap: break-word;
+}
+.guide-rich .formula {
+  display: block;
+  white-space: pre-wrap;
+  margin: 0.6rem 0 0.2rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-gray-800);
+  border-radius: 0.5rem;
+  background: var(--color-gray-950);
+  color: var(--color-gray-300);
+  font: 13px/1.6 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}

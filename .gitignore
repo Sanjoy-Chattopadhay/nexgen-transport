@@ -23,7 +23,8 @@ Masters/
 *.sql.zip
 *.dump
 *.bak
-web/src/guide-data/
+# The illustrated guide is built from screenshots of client data.
+**/guide-data/
 
 # Source PDFs and the raw per-state GeoJSON the base map is built from.
 # The built layers (data/india_states.json, data/india_districts.json,

@@ -113,4 +113,10 @@ are threads that start/stop independently (`/internal/v1/roles/...`).
   expand → backfill → contract, never one destructive step.
 * A new write path that changes published figures must publish its event,
   so analytics recomputes and caches drop.
+* Web: navigation lives in `web/src/core/nav.ts` — a new page joins a
+  section (as a tab) rather than adding a sidebar entry. The geofence
+  module's pages are under `/geo/...` and its API under `/api/v1/geo/...`.
+  No text below `text-xs` (13 px) and no chart text below 12 px. Colours that
+  CSS cannot reach come from `PALETTE` or `tc(hex)` in `core/theme.ts`, never
+  a bare hex. No map tile layer (invariant 9).
 * Commit and push after every update (the user reverts by commit).
