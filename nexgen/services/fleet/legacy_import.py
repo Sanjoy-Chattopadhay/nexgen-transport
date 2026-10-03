@@ -256,7 +256,7 @@ def verify_trip_copies(sample: int | None = None) -> dict:
         cur.execute(f"SELECT i_trip_no, COUNT(*) n, {expr} c FROM {st}.tta_trip_gps "
                     f"WHERE i_trip_no BETWEEN %s AND %s GROUP BY i_trip_no", (lo, hi))
         legacy = {r["i_trip_no"]: (int(r["n"]), int(r["c"] or 0)) for r in cur.fetchall()}
-        cur.execute(f"SELECT i_trip_no, COUNT(*) n, {expr} c FROM v1_tta_trip_gps "
+        cur.execute(f"SELECT i_trip_no, COUNT(*) n, {expr} c FROM v1_tta_trip_gps_cdist "
                     f"WHERE i_trip_no BETWEEN %s AND %s GROUP BY i_trip_no", (lo, hi))
         ours = {r["i_trip_no"]: (int(r["n"]), int(r["c"] or 0)) for r in cur.fetchall()}
     same = more = fewer = differ = 0

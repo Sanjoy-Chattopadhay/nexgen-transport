@@ -82,7 +82,7 @@ def trip(trip_no: int):
 def trip_fixes(trip_no: int, limit: int = Query(20000, ge=1, le=50000)):
     with connect("fleet") as conn, conn.cursor() as cur:
         cur.execute("SELECT dt_message, d_lat, d_long, i_speed, s_status, is_moving, i_dist, i_cdist, c_source, i_seq "
-                    "FROM v1_tta_trip_gps WHERE i_tenant_id=%s AND i_trip_no=%s ORDER BY dt_message, i_seq LIMIT %s",
+                    "FROM v1_tta_trip_gps_cdist WHERE i_tenant_id=%s AND i_trip_no=%s ORDER BY dt_message, i_seq LIMIT %s",
                     (current_tenant_id(), trip_no, limit))
         return cur.fetchall()
 

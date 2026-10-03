@@ -56,7 +56,7 @@ def _load_bundle(conn, trip_no: int):
             """SELECT dt_message, d_lat, d_long, i_speed, i_status_speed_kmph,
                       is_moving, s_wpnt1, s_wpnt1_st_abbr, i_wpnt1_mt,
                       i_dist, i_cdist, s_status
-               FROM tta_trip_gps WHERE i_trip_no = %s ORDER BY dt_message""",
+               FROM tta_trip_gps_cdist WHERE i_trip_no = %s ORDER BY dt_message""",
             (trip_no,),
         )
         rows = cur.fetchall()

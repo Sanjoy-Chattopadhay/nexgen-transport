@@ -311,7 +311,7 @@ def get_tta_trip(trip_no: int, scope: ConsignorScope = Depends(consignor_scope),
                       MAX(COALESCE(i_status_speed_kmph, i_speed)) AS max_speed_kmph,
                       AVG(CASE WHEN is_moving = 1
                           THEN COALESCE(i_status_speed_kmph, i_speed) END) AS avg_moving_speed_kmph
-               FROM tta_trip_gps WHERE i_trip_no = %s""",
+               FROM tta_trip_gps_cdist WHERE i_trip_no = %s""",
             (trip_no,),
         )
         gps_summary = cur.fetchone()

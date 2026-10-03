@@ -80,12 +80,15 @@ FROM trip_provider_metric m
 LEFT JOIN trip_source_record r ON r.i_tenant_id = m.i_tenant_id AND r.i_trip_no = m.i_trip_no;
 
 -- A trip's copy of its truck's fixes, reproduced from the one stored copy.
--- id: unique per (trip, fix) and in time order, like the old auto-increment.
--- i_cdist: the running sum of i_dist from the trip's first fix, which is
--- exactly what the source sent (verified on 40 random trips, 2026-10-03).
+-- Mergeable (no window function), so MySQL pushes a trip, vehicle or time
+-- filter straight down to gps_fix's primary key and its month partitions --
+-- the fleet-wide scans (network, waypoints, speed, hotspots) stay fast.
+--   id      stable per physical fix: vehicle, second, sequence. Unique within
+--           a trip, ordered in time, and unchanged when later fixes arrive.
+--   i_cdist NULL here; v1_tta_trip_gps_cdist adds it for the per-trip readers.
 CREATE OR REPLACE VIEW v1_tta_trip_gps AS
-SELECT w.i_trip_no * 100000
-         + ROW_NUMBER() OVER (PARTITION BY w.i_tenant_id, w.i_trip_no ORDER BY f.dt_fix, f.i_seq) AS id,
+SELECT CAST(f.i_vehicle_id AS SIGNED) * 10000000000
+         + (TO_SECONDS(f.dt_fix) - 63776908800) * 10 + f.i_seq AS id,
        w.i_trip_no,
        v.s_asset_no                       AS s_asset_id,
        dv.s_device_no                     AS s_device_id,
@@ -103,15 +106,14 @@ SELECT w.i_trip_no * 100000
        NULLIF(w2.s_state_abbr, '')        AS s_wpnt2_st_abbr,
        f.c_uom                            AS s_uom,
        COALESCE(o.i_dist_m, f.i_dist_m)   AS i_dist,
-       SUM(COALESCE(o.i_dist_m, f.i_dist_m, 0))
-         OVER (PARTITION BY w.i_tenant_id, w.i_trip_no ORDER BY f.dt_fix, f.i_seq
-               ROWS UNBOUNDED PRECEDING)  AS i_cdist,
+       CAST(NULL AS SIGNED)               AS i_cdist,
        st.s_status,
        st.b_moving                        AS is_moving,
        st.i_speed_kmph                    AS i_status_speed_kmph,
        f.c_source,
        f.i_seq,
        f.i_batch_id,
+       f.i_vehicle_id,
        w.i_tenant_id
 FROM trip_gps_window w
 JOIN gps_fix f            ON f.i_tenant_id = w.i_tenant_id AND f.i_vehicle_id = w.i_vehicle_id
@@ -124,6 +126,20 @@ LEFT JOIN ref_waypoint w2 ON w2.i_waypoint_id = f.i_wp2_id
 LEFT JOIN ref_gps_status st ON st.i_status_id = f.i_status_id
 LEFT JOIN trip_fix_override o ON o.i_tenant_id = w.i_tenant_id AND o.i_trip_no = w.i_trip_no
                              AND o.dt_fix = f.dt_fix AND o.i_seq = f.i_seq;
+
+-- The same rows with i_cdist: the running sum of i_dist from the trip's
+-- first fix, which is exactly what the source sent (verified on 40 random
+-- trips, 2026-10-03). A window function, so read it one trip at a time (a
+-- trip filter is pushed into the window's partition).
+CREATE OR REPLACE VIEW v1_tta_trip_gps_cdist AS
+SELECT g.id, g.i_trip_no, g.s_asset_id, g.s_device_id, g.i_entity_id, g.s_entity_name, g.dt_message,
+       g.d_lat, g.d_long, g.i_speed, g.s_wpnt1, g.i_wpnt1_mt, g.s_wpnt1_st_abbr, g.s_wpnt2, g.i_wpnt2_mt,
+       g.s_wpnt2_st_abbr, g.s_uom, g.i_dist,
+       SUM(COALESCE(g.i_dist, 0)) OVER (PARTITION BY g.i_tenant_id, g.i_trip_no
+                                        ORDER BY g.dt_message, g.i_seq ROWS UNBOUNDED PRECEDING) AS i_cdist,
+       g.s_status, g.is_moving, g.i_status_speed_kmph, g.c_source, g.i_seq, g.i_batch_id, g.i_vehicle_id,
+       g.i_tenant_id
+FROM v1_tta_trip_gps g;
 
 -- ---------------------------------------------------------------------------
 -- Normalised contract
