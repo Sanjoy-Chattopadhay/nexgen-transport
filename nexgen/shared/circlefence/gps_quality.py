@@ -125,11 +125,14 @@ wilson_interval = _wilson
 # 1. Coverage scorecards
 # ---------------------------------------------------------------------------
 
-# One aggregation pass over the GPS table, then index joins -- deliberately not
-# three correlated subqueries per trip row, which is the obvious way to write
-# this and measured 42 s on 2.4k trips against 3.5M pings. The GROUP BY at the
-# end collapses the rare case of two pings sharing a trip's last timestamp,
-# which would otherwise duplicate the trip row and double-count it.
+# Each trip's first and last fix from tta_trip_gps_span (kept by the fleet
+# processor as it stores fixes), then index joins -- deliberately not three
+# correlated subqueries per trip row, which is the obvious way to write this
+# and measured 42 s on 2.4k trips against 3.5M pings. In NexGen the GPS is a
+# view over normalised tables, so even one MIN/MAX ... GROUP BY pass over it
+# took 160 s for the fleet; the span gives the same two values per trip. The
+# GROUP BY at the end collapses the rare case of two pings sharing a trip's
+# last timestamp, which would otherwise duplicate the trip row and double-count it.
 _COVERAGE_SQL = """
     SELECT t.i_trip_no,
            t.s_trans_name,
@@ -143,11 +146,7 @@ _COVERAGE_SQL = """
            MAX(lastp.s_wpnt1_st_abbr) AS end_state
       FROM tta_trips t
       LEFT JOIN tta_trip_metrics m ON m.i_trip_no = t.i_trip_no
-      LEFT JOIN (SELECT i_trip_no,
-                        MIN(dt_message) AS first_ping,
-                        MAX(dt_message) AS last_ping
-                   FROM tta_trip_gps
-                  GROUP BY i_trip_no) agg ON agg.i_trip_no = t.i_trip_no
+      LEFT JOIN tta_trip_gps_span agg ON agg.i_trip_no = t.i_trip_no
       LEFT JOIN tta_trip_gps lastp
              ON lastp.i_trip_no = t.i_trip_no
             AND lastp.dt_message = agg.last_ping
@@ -273,8 +272,8 @@ def route_end_gap(trip_class: str | None = "zonal", min_trips: int = 5, conn=Non
                           g.d_lat, g.d_long
                      FROM tta_trips t
                      JOIN tta_trip_gps g ON g.i_trip_no = t.i_trip_no
-                     JOIN (SELECT i_trip_no, MAX(dt_message) m
-                             FROM tta_trip_gps GROUP BY i_trip_no) last
+                     JOIN (SELECT i_trip_no, last_ping AS m
+                             FROM tta_trip_gps_span) last
                        ON last.i_trip_no = g.i_trip_no AND last.m = g.dt_message
                     WHERE (%s IS NULL OR t.s_trip_class = %s)""",
                 (trip_class, trip_class),
@@ -367,9 +366,7 @@ def ungeofenced_destinations(trip_class: str | None = "zonal", conn=None) -> dic
                           MAX(lastp.d_long) AS d_long
                      FROM tta_trips t
                      LEFT JOIN tta_trip_metrics m ON m.i_trip_no = t.i_trip_no
-                     LEFT JOIN (SELECT i_trip_no, MAX(dt_message) AS last_ping
-                                  FROM tta_trip_gps
-                                 GROUP BY i_trip_no) agg ON agg.i_trip_no = t.i_trip_no
+                     LEFT JOIN (SELECT i_trip_no, last_ping FROM tta_trip_gps_span) agg ON agg.i_trip_no = t.i_trip_no
                      LEFT JOIN tta_trip_gps lastp
                             ON lastp.i_trip_no = t.i_trip_no
                            AND lastp.dt_message = agg.last_ping
@@ -732,8 +729,7 @@ def destination_detail(destination: str, trip_class: str | None = "zonal",
                           MAX(agg.last_ping) AS last_ping
                      FROM tta_trips t
                      LEFT JOIN tta_trip_metrics m ON m.i_trip_no = t.i_trip_no
-                     LEFT JOIN (SELECT i_trip_no, MAX(dt_message) AS last_ping
-                                  FROM tta_trip_gps GROUP BY i_trip_no) agg
+                     LEFT JOIN (SELECT i_trip_no, last_ping FROM tta_trip_gps_span) agg
                             ON agg.i_trip_no = t.i_trip_no
                      LEFT JOIN tta_trip_gps lastp
                             ON lastp.i_trip_no = t.i_trip_no

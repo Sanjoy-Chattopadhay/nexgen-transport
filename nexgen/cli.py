@@ -43,6 +43,19 @@ def cmd_run(args) -> int:
 
     setup_logging("supervisor")
     cfg = get_config()
+    # Before anything is migrated or started: a second `run` must never take
+    # services away from a NexGen that is already running.
+    from nexgen.supervisor.process import port_owner
+    held = port_owner(cfg.gateway_port)
+    if held is not None:
+        pid, cmd = held
+        if "nexgen" in cmd and "run" in cmd:
+            print(f"NexGen Transport is already running (pid {pid}): open http://{cfg.host}:{cfg.gateway_port}\n"
+                  "To restart it, stop it first with stop.bat (or: python -m nexgen shutdown).")
+        else:
+            print(f"Port {cfg.gateway_port} is in use by pid {pid} ({' '.join(cmd)[:120]}). "
+                  "Free it, or set run.gateway_port in config/services.yaml.")
+        return 1
     if not args.no_migrate:
         from nexgen.core.migrate import migrate
         try:

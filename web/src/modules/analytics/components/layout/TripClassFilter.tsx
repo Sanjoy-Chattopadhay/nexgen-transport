@@ -3,7 +3,7 @@ import { useTripClass } from '../../context/TripClassContext';
 import type { TripClassValue } from '../../lib/tripClass';
 
 /**
- * Global zonal/local switch, directly under the Smart-Truck brand.
+ * Global zonal/local switch, directly under the product name in the sidebar.
  *
  * The two upstream eTrans feeds are the app's top-level split, so the control
  * sits above everything else in the sidebar — ahead of the consignor switcher —

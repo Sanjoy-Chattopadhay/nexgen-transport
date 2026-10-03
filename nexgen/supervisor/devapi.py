@@ -257,13 +257,17 @@ def config():
 
 
 @router.post("/config/reload")
-def config_reload():
-    """Re-read the YAML files in the supervisor. Services re-read on restart."""
+def config_reload(request: Request):
+    """Re-read the YAML files in the supervisor and rebuild the gateway's route
+    table, so a routes change applies at once. Services re-read on restart."""
+    from nexgen.supervisor.routes import build_table
     try:
         reload_config()
+        table = build_table()
     except Exception as exc:
         raise HTTPException(400, f"configuration rejected: {exc}") from exc
-    return {"reloaded": True}
+    request.app.state.route_table = table
+    return {"reloaded": True, "routes": len(table)}
 
 
 @router.get("/routes")

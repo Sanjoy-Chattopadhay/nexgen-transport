@@ -86,6 +86,8 @@ LEFT JOIN trip_source_record r ON r.i_tenant_id = m.i_tenant_id AND r.i_trip_no 
 --   id      stable per physical fix: vehicle, second, sequence. Unique within
 --           a trip, ordered in time, and unchanged when later fixes arrive.
 --   i_cdist NULL here; v1_tta_trip_gps_cdist adds it for the per-trip readers.
+--   Waypoint names are stored exactly as spelt (ref_waypoint is binary-keyed)
+--   and handed back case-insensitive, as the feed's own columns compare.
 CREATE OR REPLACE VIEW v1_tta_trip_gps AS
 SELECT CAST(f.i_vehicle_id AS SIGNED) * 10000000000
          + (TO_SECONDS(f.dt_fix) - 63776908800) * 10 + f.i_seq AS id,
@@ -98,12 +100,12 @@ SELECT CAST(f.i_vehicle_id AS SIGNED) * 10000000000
        f.d_lat,
        f.d_lon                            AS d_long,
        f.i_speed,
-       w1.s_name                          AS s_wpnt1,
+       w1.s_name COLLATE utf8mb4_0900_ai_ci                    AS s_wpnt1,
        f.i_wp1_m                          AS i_wpnt1_mt,
-       NULLIF(w1.s_state_abbr, '')        AS s_wpnt1_st_abbr,
-       w2.s_name                          AS s_wpnt2,
+       NULLIF(w1.s_state_abbr, '') COLLATE utf8mb4_0900_ai_ci  AS s_wpnt1_st_abbr,
+       w2.s_name COLLATE utf8mb4_0900_ai_ci                    AS s_wpnt2,
        f.i_wp2_m                          AS i_wpnt2_mt,
-       NULLIF(w2.s_state_abbr, '')        AS s_wpnt2_st_abbr,
+       NULLIF(w2.s_state_abbr, '') COLLATE utf8mb4_0900_ai_ci  AS s_wpnt2_st_abbr,
        f.c_uom                            AS s_uom,
        COALESCE(o.i_dist_m, f.i_dist_m)   AS i_dist,
        CAST(NULL AS SIGNED)               AS i_cdist,
@@ -114,6 +116,7 @@ SELECT CAST(f.i_vehicle_id AS SIGNED) * 10000000000
        f.i_seq,
        f.i_batch_id,
        f.i_vehicle_id,
+       o.i_cdist_m                        AS i_cdist_src,
        w.i_tenant_id
 FROM trip_gps_window w
 JOIN gps_fix f            ON f.i_tenant_id = w.i_tenant_id AND f.i_vehicle_id = w.i_vehicle_id
@@ -128,15 +131,18 @@ LEFT JOIN trip_fix_override o ON o.i_tenant_id = w.i_tenant_id AND o.i_trip_no =
                              AND o.dt_fix = f.dt_fix AND o.i_seq = f.i_seq;
 
 -- The same rows with i_cdist: the running sum of i_dist from the trip's
--- first fix, which is exactly what the source sent (verified on 40 random
--- trips, 2026-10-03). A window function, so read it one trip at a time (a
--- trip filter is pushed into the window's partition).
+-- first fix, which is what the source sends -- except where its counter
+-- restarted mid-trip (8 of 7,257 trips by 2026-10-03); there the source's own
+-- figure is kept per fix (trip_fix_override.i_cdist_m) and shown instead.
+-- A window function, so read it one trip at a time (a trip filter is pushed
+-- into the window's partition).
 CREATE OR REPLACE VIEW v1_tta_trip_gps_cdist AS
 SELECT g.id, g.i_trip_no, g.s_asset_id, g.s_device_id, g.i_entity_id, g.s_entity_name, g.dt_message,
        g.d_lat, g.d_long, g.i_speed, g.s_wpnt1, g.i_wpnt1_mt, g.s_wpnt1_st_abbr, g.s_wpnt2, g.i_wpnt2_mt,
        g.s_wpnt2_st_abbr, g.s_uom, g.i_dist,
-       SUM(COALESCE(g.i_dist, 0)) OVER (PARTITION BY g.i_tenant_id, g.i_trip_no
-                                        ORDER BY g.dt_message, g.i_seq ROWS UNBOUNDED PRECEDING) AS i_cdist,
+       COALESCE(g.i_cdist_src,
+                SUM(COALESCE(g.i_dist, 0)) OVER (PARTITION BY g.i_tenant_id, g.i_trip_no
+                                                 ORDER BY g.dt_message, g.i_seq ROWS UNBOUNDED PRECEDING)) AS i_cdist,
        g.s_status, g.is_moving, g.i_status_speed_kmph, g.c_source, g.i_seq, g.i_batch_id, g.i_vehicle_id,
        g.i_tenant_id
 FROM v1_tta_trip_gps g;
@@ -187,7 +193,9 @@ CREATE OR REPLACE VIEW v1_driver AS
 SELECT i_tenant_id, i_driver_id, NULLIF(s_name, '') AS s_name, NULLIF(s_mobile, '') AS s_mobile FROM driver;
 
 CREATE OR REPLACE VIEW v1_waypoint AS
-SELECT i_waypoint_id, s_name, NULLIF(s_state_abbr, '') AS s_state_abbr FROM ref_waypoint;
+SELECT i_waypoint_id, s_name COLLATE utf8mb4_0900_ai_ci AS s_name,
+       NULLIF(s_state_abbr, '') COLLATE utf8mb4_0900_ai_ci AS s_state_abbr
+FROM ref_waypoint;
 
 CREATE OR REPLACE VIEW v1_trip_gps_window AS
 SELECT i_tenant_id, i_trip_no, i_vehicle_id, dt_from, dt_to, dt_first_fix, dt_last_fix FROM trip_gps_window;

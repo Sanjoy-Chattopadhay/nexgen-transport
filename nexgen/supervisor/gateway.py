@@ -63,7 +63,8 @@ def create_app(supervisor: Supervisor) -> FastAPI:
     @app.api_route("/api/v1/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     async def proxy(rest: str, request: Request):
         path = request.url.path
-        route = resolve(table, path)
+        # Read per request: the developer page's configuration reload swaps it.
+        route = resolve(app.state.route_table, path)
         if route is None:
             return JSONResponse({"error": "not_found", "detail": f"No service answers {path}."}, status_code=404)
         svc = supervisor.services.get(route.service)

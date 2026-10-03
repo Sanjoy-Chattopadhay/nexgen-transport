@@ -179,6 +179,8 @@ class _Settings:
     TMS_GPS_MAX_CONCURRENCY = property(lambda self: int(_tms("gps_max_concurrency", 8)))
     TMS_INGEST_DEADLOCK_RETRIES = property(lambda self: int(_tms("ingest_deadlock_retries", 3)))
     TMS_MAX_WINDOW_HOURS = property(lambda self: int(_tms("max_window_hours", 24)))
+    # The fresh-start floor: nothing before it is fetched or reported missing.
+    TMS_START_FROM = property(lambda self: str(_tms("start_from", "") or "").strip())
     TMS_LAG_ALERT_INTERVALS = property(lambda self: float(_tms("lag_alert_intervals", 3)))
     TMS_BOOT_CATCHUP = property(lambda self: bool(int(_tms("boot_catchup", 1) or 0)))
     TMS_BOOT_CATCHUP_DELAY_SECONDS = property(lambda self: int(_tms("boot_catchup_delay_s", 60)))

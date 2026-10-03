@@ -276,8 +276,10 @@ def live_stats(conn=Depends(get_geo_db)):
              GROUP BY 1
         """)
         sev = {r["s_severity"]: r["n"] for r in cur.fetchall()}
-        cur.execute("SELECT COUNT(*) n FROM geo_live_event")
-        total = cur.fetchone()["n"]
+        # The severity groups partition the table (s_severity is NOT NULL), so
+        # their sum is the total: a second full count of a table that reaches
+        # millions of rows on a long replay is not needed on every poll.
+        total = sum(sev.values())
         cur.execute("""
             SELECT i_last_ping_id, dt_last_message, i_processed
               FROM geo_live_cursor WHERE i_id = 1

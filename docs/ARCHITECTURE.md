@@ -92,6 +92,16 @@ the pre-filter only sets `c_flag`; a source that delivers filtered positions
 (`gps_kind: filtered`) lands them with `c_source='F'`, replacing or merging
 with raw fixes of the same window per `fleet.gps.filtered_policy`.
 
+What differs between consignment copies of one fix is kept per trip in
+`trip_fix_override`: the per-fix distance (the source restarts it at each
+trip's first fix) and, where the source's cumulative-distance counter
+restarted mid-trip, its cumulative figure (otherwise derived as the running
+sum, which is what the source sends). Waypoint names are stored byte for byte
+— the feed spells some both `Ramgarh` and `RAMGARH` — and compared
+case-insensitively, as the feed's own columns are. With these, every one of
+the 7,257 imported trips rebuilds row for row and value for value
+(`verify_trip_copies`).
+
 ### Compatibility views
 
 The analysis code of both legacy apps (~40k lines) reads tables by their

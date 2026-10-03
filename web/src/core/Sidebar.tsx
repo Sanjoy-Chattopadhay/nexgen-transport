@@ -120,7 +120,8 @@ function Freshness() {
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${rf?.enabled ? 'bg-emerald-400' : 'bg-gray-600'} ${running ? 'animate-pulse-dot' : ''}`} />
-          <span className="truncate">
+          <span className="truncate"
+            title={run ? `Fence results: published run #${run.i_run_id} · ${fmtInt(run.i_trips)} trips · ${fmtInt(run.i_pings_read)} fixes` : undefined}>
             {run ? `Fence results: run #${run.i_run_id} · ${fmtInt(run.i_trips)} trips` : 'No published fence run yet'}
           </span>
         </span>

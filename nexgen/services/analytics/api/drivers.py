@@ -262,7 +262,7 @@ def get_driver_trend(
     driver_id: int,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    group_by: str = Query("month", regex="^(month|week|day)$"),
+    group_by: str = Query("month", pattern="^(month|week|day)$"),
     scope: ConsignorScope = Depends(consignor_scope),
     conn=Depends(get_db),
 ):
@@ -316,7 +316,7 @@ def get_driver_trend(
 @router.get("/{driver_id}/driving-pattern")
 def get_driver_driving_pattern(
     driver_id: int,
-    window: str = Query("all", regex="^(all|7d|15d|30d|90d|last3|last5|last10)$"),
+    window: str = Query("all", pattern="^(all|7d|15d|30d|90d|last3|last5|last10)$"),
     scope: ConsignorScope = Depends(consignor_scope),
     conn=Depends(get_db),
 ):
@@ -329,7 +329,7 @@ def get_driver_driving_pattern(
 @router.get("/{driver_id}/alerts")
 def get_driver_alerts(
     driver_id: int,
-    window: str = Query("all", regex="^(all|7d|15d|30d|90d|last3|last5|last10)$"),
+    window: str = Query("all", pattern="^(all|7d|15d|30d|90d|last3|last5|last10)$"),
     scope: ConsignorScope = Depends(consignor_scope),
     conn=Depends(get_db),
 ):

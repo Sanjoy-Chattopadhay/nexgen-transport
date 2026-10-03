@@ -256,6 +256,7 @@ services:
       - /api/v1/transporters/*
       - /api/v1/transporters
       - /api/v1/hotspots/*
+      - /api/v1/hotspots
       - /api/v1/speed/*
       - /api/v1/manual/*
       - /api/v1/manual
@@ -335,12 +336,18 @@ integrations:
     boot_catchup: "${TMS_BOOT_CATCHUP:-1}"
     boot_catchup_delay_s: "${TMS_BOOT_CATCHUP_DELAY_SECONDS:-60}"
     boot_catchup_min_gap_min: "${TMS_BOOT_CATCHUP_MIN_GAP_MINUTES:-10}"
+    # Nothing before this instant is fetched, and nothing before it is
+    # reported as missing: a fresh database starts here and builds forward
+    # (the first run of each lane covers start_from -> now). Empty: no floor,
+    # the first run covers its lookback. Source wall clock (IST).
+    start_from: "${TMS_START_FROM:-}"
     lanes:
-      # Off until switched on from the Ingestion page: the legacy
-      # Smart-Truck app may still be pulling the same feed, and two pullers
-      # would double the load on the upstream.
-      zonal: { enabled: false, every_min: 30, lookback_min: 120 }
-      local: { enabled: false, every_min: 20, lookback_min: 180 }
+      # Seed values for each lane's schedule, from .env; the live schedule is
+      # the one saved from the Data sync page. Off unless .env switches a lane
+      # on: two pullers on one feed (this and Smart-Truck) double the upstream
+      # load.
+      zonal: { enabled: "${TMS_SYNC_ENABLED:-0}", every_min: "${TMS_SYNC_INTERVAL_MINUTES:-30}", lookback_min: "${TMS_SYNC_LOOKBACK_MINUTES:-120}" }
+      local: { enabled: "${TMS_SYNC_ENABLED_LOCAL:-0}", every_min: "${TMS_SYNC_INTERVAL_MINUTES_LOCAL:-20}", lookback_min: "${TMS_SYNC_LOOKBACK_MINUTES_LOCAL:-180}" }
     waypoint_refresh_hours: "${TMS_WAYPOINT_REFRESH_HOURS:-6}"
 
   osrm:

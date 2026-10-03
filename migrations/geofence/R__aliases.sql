@@ -44,6 +44,14 @@ SELECT id, i_trip_no, s_asset_id, s_device_id, i_entity_id, s_entity_name, dt_me
        s_status, is_moving, i_status_speed_kmph
 FROM {{schema:fleet}}.v1_tta_trip_gps_cdist;
 
+-- Each trip's first and last fix, kept by the fleet processor as it stores
+-- them. The same values as MIN/MAX(dt_message) ... GROUP BY i_trip_no over
+-- tta_trip_gps, without materialising every fix of the fleet to get them.
+CREATE OR REPLACE VIEW tta_trip_gps_span AS
+SELECT i_trip_no, dt_first_fix AS first_ping, dt_last_fix AS last_ping
+FROM {{schema:fleet}}.v1_trip_gps_window
+WHERE dt_first_fix IS NOT NULL;
+
 -- Geo-Fencing's feed names ------------------------------------------------
 -- geo_gps_ping: id is stable per physical fix (vehicle, second, sequence).
 CREATE OR REPLACE VIEW geo_gps_ping AS

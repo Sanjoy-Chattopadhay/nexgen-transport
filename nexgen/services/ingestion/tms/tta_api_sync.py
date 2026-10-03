@@ -616,6 +616,38 @@ def _mark_boot_catchup(conn, lane: Lane, ts: datetime) -> None:
         logger.warning("Could not record boot catch-up for %s: %s", lane.key, e)
 
 
+def start_from() -> datetime | None:
+    """The fresh-start floor (integrations.tms.start_from), or None.
+
+    A database started fresh on a date builds forward from it: no lane
+    fetches anything before it, and nothing before it is filed as missing.
+    """
+    raw = settings.TMS_START_FROM
+    if not raw:
+        return None
+    dt = parse_dt(raw)
+    if dt is None:
+        logger.error("integrations.tms.start_from %r is not a date; ignoring it", raw)
+    return dt
+
+
+def lane_window_start(watermark: datetime | None, lookback: timedelta, now: datetime) -> datetime:
+    """Where a lane's next window starts, before the max-window clamp.
+
+    Normally the watermark minus a lookback overlap (re-fetched rows dedupe),
+    or, for a lane that has never run, one lookback back from now. With a
+    start_from floor, a lane that has never run starts exactly there, and no
+    window ever reaches before it. One rule for the run and for the preview
+    the Data sync page shows, so the screen says what will really be pulled.
+    """
+    start = (watermark or now) - lookback
+    floor = start_from()
+    if floor is not None:
+        if watermark is None or start < floor:
+            start = floor
+    return start
+
+
 def plan_boot_catchup(conn, lane: Lane, enabled: bool,
                       reserve: bool = True) -> dict:
     """Decide whether this lane should run one catch-up now, and say what it
@@ -639,7 +671,7 @@ def plan_boot_catchup(conn, lane: Lane, enabled: bool,
         (get_sync_config(conn, lane) or {}).get("lookback_minutes") or lane.default_lookback))
     watermark = get_watermark(conn, lane)
     floor = now - timedelta(hours=settings.TMS_MAX_WINDOW_HOURS)
-    desired_start = (watermark - lookback) if watermark else (now - lookback)
+    desired_start = lane_window_start(watermark, lookback, now)
     window_start = max(desired_start, floor)
     plan = {
         "lane": lane.key,
@@ -662,6 +694,14 @@ def plan_boot_catchup(conn, lane: Lane, enabled: bool,
         plan["reason"] = "lane disabled"
         return plan
     if watermark is None:
+        if start_from() is not None:
+            # A fresh database with a start date: pull from it now rather than
+            # wait a whole interval for the first tick.
+            plan["should_run"] = True
+            plan["reason"] = f"fresh start — first pull from {start_from().isoformat()}"
+            if reserve:
+                _mark_boot_catchup(conn, lane, datetime.now())
+            return plan
         # Never synced: the first ordinary tick already covers a full lookback,
         # so there is nothing to catch up TO.
         plan["reason"] = "no watermark yet — nothing to catch up"
@@ -843,8 +883,8 @@ def run_sync(conn=None, trigger: str = "scheduled", lane_key: str = ZONAL) -> di
         lookback = timedelta(minutes=cfg.get("lookback_minutes", lane.default_lookback))
         watermark = get_watermark(conn, lane)
         # Always re-fetch a lookback overlap so nothing slips between runs; the
-        # DB dedup absorbs the re-fetched rows.
-        window_start = (watermark or window_end) - lookback
+        # DB dedup absorbs the re-fetched rows. Never before start_from.
+        window_start = lane_window_start(watermark, lookback, window_end)
         # A lane that holds its watermark (nothing published yet) must not let
         # the window grow without bound over a long quiet period.
         floor = window_end - timedelta(hours=settings.TMS_MAX_WINDOW_HOURS)

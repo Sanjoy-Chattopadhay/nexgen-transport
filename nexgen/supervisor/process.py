@@ -36,6 +36,45 @@ from nexgen.core.logs import logs_dir
 logger = logging.getLogger(__name__)
 
 
+def supervisor_of(pid: int) -> psutil.Process | None:
+    """The live NexGen supervisor that started this service process, if any.
+
+    A service is an orphan only when the supervisor that launched it is gone
+    (killed hard, so it could not stop its children). A service whose
+    supervisor is alive belongs to a running NexGen and must not be touched.
+    The supervisor is the NEXGEN_SUPERVISOR_PID it was started with, or its
+    parent; a recycled pid is ruled out by requiring a `nexgen run` process
+    that is older than the service.
+    """
+    try:
+        proc = psutil.Process(pid)
+        sup_pid = None
+        try:
+            sup_pid = int(proc.environ().get("NEXGEN_SUPERVISOR_PID") or 0) or None
+        except (psutil.Error, ValueError, OSError):
+            pass
+        sup = psutil.Process(sup_pid or proc.ppid())
+        cmd = sup.cmdline()
+        if "nexgen" in cmd and "run" in cmd and sup.create_time() <= proc.create_time():
+            return sup
+    except (psutil.Error, OSError, ValueError):
+        pass
+    return None
+
+
+def port_owner(port: int) -> tuple[int | None, list[str]] | None:
+    """Who is listening on a local TCP port: (pid, command line), or None if free."""
+    for c in psutil.net_connections(kind="tcp"):
+        if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN:
+            cmd: list[str] = []
+            try:
+                cmd = psutil.Process(c.pid).cmdline() if c.pid else []
+            except psutil.Error:
+                pass
+            return c.pid, cmd
+    return None
+
+
 class ManagedService:
     def __init__(self, name: str):
         self.name = name
@@ -100,6 +139,13 @@ class ManagedService:
                 except Exception:
                     pass
                 if "nexgen" in owner and "serve" in owner and self.name in owner:
+                    sup = supervisor_of(c.pid)
+                    if sup is not None and sup.pid != os.getpid():
+                        # Another NexGen is running and owns it: never take a
+                        # live system's service away from it.
+                        raise RuntimeError(
+                            f"{self.name} on port {self.port} belongs to another running NexGen "
+                            f"(supervisor pid {sup.pid}); stop that one first (stop.bat)")
                     # An orphan of an earlier supervisor that was killed hard:
                     # ours to replace.
                     logger.warning("replacing orphaned %s (pid %s)", self.name, c.pid)

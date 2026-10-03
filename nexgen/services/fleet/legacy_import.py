@@ -12,9 +12,14 @@ Steps, each idempotent (re-running tops up rather than duplicating):
   3. GPS, month by month: one row per physical fix (INSERT IGNORE on the
      vehicle key keeps the first copy of a fix shared by several
      consignments), then per-trip overrides for the 291 fixes whose per-fix
-     distance differs between copies, then each trip's window
+     distance differs between copies, then each trip's window, then the
+     source's cumulative distance where its counter restarted mid-trip
   4. verify: every trip's copy, rebuilt from the one stored copy, must equal
      its legacy copy row for row (see verify_trip_copies)
+
+Waypoint names are matched byte for byte (the feed spells some both
+'Ramgarh' and 'RAMGARH'); repair_source_fidelity() brings a database imported
+before that rule up to it.
 
 Imported fixes carry i_batch_id 0, meaning "from the legacy smart_truck
 database".
@@ -98,12 +103,7 @@ def import_smart_truck(limit_trips: int | None = None) -> dict:
                 INSERT IGNORE INTO gps_entity (i_tenant_id, i_entity_id, s_entity_name)
                 SELECT {tid}, i_entity_id, MAX(s_entity_name) FROM {st}.tta_trip_gps
                 WHERE i_entity_id IS NOT NULL GROUP BY i_entity_id""", report=report)
-            _run(cur, "ref_waypoint", f"""
-                INSERT IGNORE INTO ref_waypoint (s_name, s_state_abbr)
-                SELECT DISTINCT n, s FROM (
-                    SELECT s_wpnt1 n, IFNULL(s_wpnt1_st_abbr, '') s FROM {st}.tta_trip_gps WHERE s_wpnt1 IS NOT NULL
-                    UNION SELECT s_wpnt2, IFNULL(s_wpnt2_st_abbr, '') FROM {st}.tta_trip_gps WHERE s_wpnt2 IS NOT NULL) w""",
-                 report=report)
+            _waypoints(cur, st, report)
             _run(cur, "ref_gps_status", f"""
                 INSERT IGNORE INTO ref_gps_status (s_status, b_moving, i_speed_kmph)
                 SELECT s_status, MAX(is_moving), MAX(i_status_speed_kmph) FROM {st}.tta_trip_gps
@@ -186,8 +186,10 @@ def import_smart_truck(limit_trips: int | None = None) -> dict:
                         JOIN vehicle v ON v.i_tenant_id={tid} AND v.s_asset_no = g.s_asset_id
                         LEFT JOIN device dv ON dv.i_tenant_id={tid} AND dv.s_device_no = g.s_device_id
                         LEFT JOIN ref_gps_status s ON s.s_status = g.s_status
-                        LEFT JOIN ref_waypoint w1 ON w1.s_name = g.s_wpnt1 AND w1.s_state_abbr = IFNULL(g.s_wpnt1_st_abbr, '')
-                        LEFT JOIN ref_waypoint w2 ON w2.s_name = g.s_wpnt2 AND w2.s_state_abbr = IFNULL(g.s_wpnt2_st_abbr, '')
+                        LEFT JOIN ref_waypoint w1 ON w1.s_name = g.s_wpnt1 COLLATE utf8mb4_bin
+                             AND w1.s_state_abbr = IFNULL(g.s_wpnt1_st_abbr, '') COLLATE utf8mb4_bin
+                        LEFT JOIN ref_waypoint w2 ON w2.s_name = g.s_wpnt2 COLLATE utf8mb4_bin
+                             AND w2.s_state_abbr = IFNULL(g.s_wpnt2_st_abbr, '') COLLATE utf8mb4_bin
                         WHERE g.dt_message >= %s AND g.dt_message < %s {trip_filter}
                         ORDER BY g.i_trip_no, g.dt_message""", (month, nxt), report=report)
                     conn.commit()
@@ -221,12 +223,105 @@ def import_smart_truck(limit_trips: int | None = None) -> dict:
                     dt_first_fix=LEAST(COALESCE(dt_first_fix, VALUES(dt_first_fix)), VALUES(dt_first_fix)),
                     dt_last_fix=GREATEST(COALESCE(dt_last_fix, VALUES(dt_last_fix)), VALUES(dt_last_fix))""",
                  report=report)
+            _keep_legacy_cdist(cur, st, tid, report, limit_trips)
             _run(cur, "vehicle fix stats", f"""
                 UPDATE vehicle v JOIN (
                     SELECT i_vehicle_id, MIN(dt_fix) a, MAX(dt_fix) b, COUNT(*) n FROM gps_fix
                     WHERE i_tenant_id={tid} GROUP BY i_vehicle_id) f ON f.i_vehicle_id = v.i_vehicle_id
                 SET v.dt_first_fix = f.a, v.dt_last_fix = f.b, v.i_fixes = f.n""", report=report)
             conn.commit()
+    return report
+
+
+def _waypoints(cur, st: str, report: dict) -> int:
+    """Every waypoint spelling the feed used, byte for byte (ref_waypoint is binary-keyed)."""
+    return _run(cur, "ref_waypoint", f"""
+        INSERT IGNORE INTO ref_waypoint (s_name, s_state_abbr)
+        SELECT n, s FROM (
+            SELECT s_wpnt1 COLLATE utf8mb4_bin n, IFNULL(s_wpnt1_st_abbr, '') COLLATE utf8mb4_bin s
+              FROM {st}.tta_trip_gps WHERE s_wpnt1 IS NOT NULL
+            UNION SELECT s_wpnt2 COLLATE utf8mb4_bin, IFNULL(s_wpnt2_st_abbr, '') COLLATE utf8mb4_bin
+              FROM {st}.tta_trip_gps WHERE s_wpnt2 IS NOT NULL) w""", report=report)
+
+
+def _keep_legacy_cdist(cur, st: str, tid: int, report: dict, limit_trips: int | None = None) -> int:
+    """The source's cumulative distance where it is not the running sum of its per-fix distances.
+
+    Only trips where the legacy figure departs from that sum are candidates
+    (8 of 7,257 on 2026-10-03, each a counter restart); for each, every fix
+    whose rebuilt figure differs gets the legacy one as an exception.
+    """
+    t0 = time.perf_counter()
+    lim = ""
+    if limit_trips:
+        lim = (f"WHERE i_trip_no IN (SELECT i_trip_no FROM (SELECT i_trip_no FROM {st}.tta_trips "
+               f"ORDER BY i_trip_no LIMIT {int(limit_trips)}) l)")
+    cur.execute(f"""
+        SELECT DISTINCT i_trip_no FROM (
+            SELECT i_trip_no, i_cdist,
+                   SUM(IFNULL(i_dist, 0)) OVER (PARTITION BY i_trip_no ORDER BY dt_message, id
+                                                ROWS UNBOUNDED PRECEDING) AS rs
+            FROM {st}.tta_trip_gps {lim}) x
+        WHERE NOT (i_cdist <=> rs)""")
+    trips = [r["i_trip_no"] for r in cur.fetchall()]
+    kept = 0
+    for trip in trips:
+        cur.execute(f"""
+            INSERT INTO trip_fix_override (i_tenant_id, i_trip_no, dt_fix, i_seq, i_cdist_m)
+            SELECT {tid}, c.i_trip_no, c.dt_message, c.i_seq, g.i_cdist
+            FROM {st}.tta_trip_gps g
+            JOIN v1_tta_trip_gps_cdist c ON c.i_tenant_id = {tid} AND c.i_trip_no = g.i_trip_no
+                 AND c.dt_message = g.dt_message
+            WHERE g.i_trip_no = %s AND c.i_trip_no = %s AND NOT (c.i_cdist <=> g.i_cdist)
+            ON DUPLICATE KEY UPDATE i_cdist_m = VALUES(i_cdist_m)""", (trip, trip))
+        kept += cur.rowcount
+    secs = round(time.perf_counter() - t0, 1)
+    logger.info("%-34s %9d rows  %6.1fs  (%d trips)", "trip_fix_override cdist", kept, secs, len(trips))
+    report["trip_fix_override cdist"] = {"rows": kept, "trips": len(trips), "seconds": secs}
+    return kept
+
+
+def repair_source_fidelity() -> dict:
+    """Bring a database imported before 2026-10-03's fidelity rules up to them.
+
+    1. waypoint spellings: add the spellings a case-insensitive key merged,
+       and point each fix at the spelling the source sent for it (every copy
+       of a physical fix carries the same spelling, so one value per fix);
+    2. the source's cumulative distance where its counter restarted.
+    Idempotent. smart_truck is only read.
+    """
+    cfg = get_config()
+    st = f"`{cfg.legacy_database('smart_truck')}`"
+    tid = current_tenant_id()
+    report: dict = {}
+    with connect("fleet", read_timeout=7200, write_timeout=7200) as conn, conn.cursor() as cur:
+        _waypoints(cur, st, report)
+        conn.commit()
+        # The names spelt more than one way: only fixes carrying one of these
+        # can point at the wrong spelling.
+        cur.execute(f"""
+            CREATE TEMPORARY TABLE tmp_variant (s_name VARCHAR(255) COLLATE utf8mb4_0900_ai_ci PRIMARY KEY)
+            SELECT MIN(n) AS s_name FROM (
+                SELECT s_wpnt1 COLLATE utf8mb4_bin n FROM {st}.tta_trip_gps WHERE s_wpnt1 IS NOT NULL
+                UNION SELECT s_wpnt2 COLLATE utf8mb4_bin FROM {st}.tta_trip_gps WHERE s_wpnt2 IS NOT NULL) u
+            GROUP BY n COLLATE utf8mb4_0900_ai_ci HAVING COUNT(*) > 1""")
+        cur.execute("SELECT COUNT(*) n FROM tmp_variant")
+        report["names_spelt_two_ways"] = cur.fetchone()["n"]
+        for slot in (1, 2):
+            _run(cur, f"gps_fix waypoint {slot} spelling", f"""
+                UPDATE gps_fix f
+                JOIN vehicle v ON v.i_tenant_id = f.i_tenant_id AND v.i_vehicle_id = f.i_vehicle_id
+                JOIN {st}.tta_trip_gps g ON g.s_asset_id = v.s_asset_no AND g.dt_message = f.dt_fix
+                JOIN tmp_variant x ON x.s_name = g.s_wpnt{slot}
+                JOIN ref_waypoint w ON w.s_name = g.s_wpnt{slot} COLLATE utf8mb4_bin
+                     AND w.s_state_abbr = IFNULL(g.s_wpnt{slot}_st_abbr, '') COLLATE utf8mb4_bin
+                SET f.i_wp{slot}_id = w.i_waypoint_id
+                WHERE f.i_tenant_id = {tid} AND f.i_batch_id = {LEGACY_BATCH} AND f.i_seq = 0
+                  AND NOT (f.i_wp{slot}_id <=> w.i_waypoint_id)""", report=report)
+            conn.commit()
+        cur.execute("DROP TEMPORARY TABLE tmp_variant")
+        _keep_legacy_cdist(cur, st, tid, report)
+        conn.commit()
     return report
 
 

@@ -27,6 +27,10 @@ GPS rules (decided 2026-10-03: accept and process everything):
     beside them.
   * A ping with no time or no position cannot be placed and is counted as
     unusable; it stays in the raw payload.
+  * A trip's cumulative distance is derived as the running sum of its per-fix
+    distances, which is what the source sends -- until its counter restarts
+    mid-trip. Where the source's figure differs, it is kept per fix
+    (trip_fix_override.i_cdist_m), so the trip reads exactly what was sent.
 
 Every batch ends with `fleet.trips.changed` and `fleet.fixes.stored`, written in
 the same transaction as the processed_batch row, so geofence, routing and
@@ -179,13 +183,18 @@ def _fix_values(cur, tenant: int, vehicle_id: int, r: dict, batch: dict, source:
             batch["i_batch_id"]]
 
 
-def _store_fixes(cur, tenant: int, vehicle_id: int, rows: list[list], trip_no: int, source: str,
-                 stats: Counter) -> tuple[int, datetime | None, datetime | None]:
-    """Insert the fixes not already stored for the truck. Returns (new, lo, hi)."""
-    if not rows:
-        return 0, None, None
-    rows.sort(key=lambda v: v[2])
-    lo, hi = rows[0][2], rows[-1][2]
+def _store_fixes(cur, tenant: int, vehicle_id: int, items: list[tuple[list, int | None]], trip_no: int,
+                 source: str, stats: Counter) -> tuple[int, datetime | None, datetime | None, list]:
+    """Insert the fixes not already stored for the truck.
+
+    `items` are (gps_fix row, the source's cumulative distance or None).
+    Returns (new, lo, hi, placed): placed is (dt_fix, i_seq, source cdist) for
+    every incoming fix, new or already stored, for _keep_source_cdist.
+    """
+    if not items:
+        return 0, None, None, []
+    items.sort(key=lambda it: it[0][2])
+    lo, hi = items[0][0][2], items[-1][0][2]
     if source == "F" and _filtered_policy() == "replace":
         cur.execute("DELETE FROM gps_fix WHERE i_tenant_id=%s AND i_vehicle_id=%s AND dt_fix BETWEEN %s AND %s "
                     "AND c_source='R'", (tenant, vehicle_id, lo, hi))
@@ -195,8 +204,8 @@ def _store_fixes(cur, tenant: int, vehicle_id: int, rows: list[list], trip_no: i
     by_second: dict[datetime, list[list]] = defaultdict(list)
     for e in cur.fetchall():
         by_second[e["dt_fix"]].append([e[c] for c in FIX_COLS])
-    new_rows, overrides = [], []
-    for v in rows:
+    new_rows, overrides, placed = [], [], []
+    for v, cdist in items:
         same = None
         for existing in by_second[v[2]]:
             if _reading(existing) == _reading(v):
@@ -206,12 +215,14 @@ def _store_fixes(cur, tenant: int, vehicle_id: int, rows: list[list], trip_no: i
             stats["fixes_duplicate"] += 1
             if same[12] != v[12]:
                 overrides.append((tenant, trip_no, v[2], same[3], v[12]))
+            placed.append((v[2], same[3], cdist))
             continue
         v[3] = max((x[3] for x in by_second[v[2]]), default=-1) + 1
         if v[3] > 0:
             stats["fixes_same_second"] += 1
         by_second[v[2]].append(v)
         new_rows.append(v)
+        placed.append((v[2], v[3], cdist))
     if new_rows:
         sql = (f"INSERT INTO gps_fix ({', '.join(FIX_COLS)}) VALUES ({', '.join(['%s'] * len(FIX_COLS))})")
         for i in range(0, len(new_rows), 2000):
@@ -225,7 +236,46 @@ def _store_fixes(cur, tenant: int, vehicle_id: int, rows: list[list], trip_no: i
         cur.execute("UPDATE vehicle SET i_fixes=i_fixes+%s, dt_first_fix=LEAST(COALESCE(dt_first_fix,%s),%s), "
                     "dt_last_fix=GREATEST(COALESCE(dt_last_fix,%s),%s) WHERE i_vehicle_id=%s",
                     (len(new_rows), lo, lo, hi, hi, vehicle_id))
-    return len(new_rows), lo, hi
+    return len(new_rows), lo, hi, placed
+
+
+def _keep_source_cdist(cur, tenant: int, trip_no: int, placed: list) -> int:
+    """Keep the source's cumulative distance where it is not the derived one.
+
+    The trip's copy is read back through the contract view (this
+    transaction's own writes included) and its running sum of per-fix
+    distances compared, fix by fix, with what the source sent for the fixes
+    in this block. A disagreement is stored; an agreement clears an earlier
+    exception, so a re-sent, corrected block heals the trip. Returns the
+    number of exceptions written.
+    """
+    src = {(dt, seq): int(c) for dt, seq, c in placed if c is not None}
+    if not src:
+        return 0
+    # Exceptions already held, so agreeing fixes clear only those (one
+    # statement per exception, not one per fix of the block).
+    cur.execute("SELECT dt_fix, i_seq FROM trip_fix_override WHERE i_tenant_id=%s AND i_trip_no=%s "
+                "AND i_cdist_m IS NOT NULL", (tenant, trip_no))
+    held = {(r["dt_fix"], r["i_seq"]) for r in cur.fetchall()}
+    cur.execute("SELECT dt_message, i_seq, i_dist FROM v1_tta_trip_gps WHERE i_tenant_id=%s AND i_trip_no=%s "
+                "ORDER BY dt_message, i_seq", (tenant, trip_no))
+    running, keep, agree = 0, [], []
+    for r in cur.fetchall():
+        running += int(r["i_dist"] or 0)
+        key = (r["dt_message"], r["i_seq"])
+        if key in src:
+            row = (tenant, trip_no, key[0], key[1])
+            if src[key] != running:
+                keep.append(row + (src[key],))
+            elif key in held:
+                agree.append(row)
+    if keep:
+        cur.executemany("INSERT INTO trip_fix_override (i_tenant_id, i_trip_no, dt_fix, i_seq, i_cdist_m) "
+                        "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE i_cdist_m=VALUES(i_cdist_m)", keep)
+    if agree:
+        cur.executemany("UPDATE trip_fix_override SET i_cdist_m=NULL WHERE i_tenant_id=%s AND i_trip_no=%s "
+                        "AND dt_fix=%s AND i_seq=%s", agree)
+    return len(keep)
 
 
 def _update_window(cur, tenant: int, trip_no: int, vehicle_id: int, frm, to) -> int:
@@ -255,7 +305,7 @@ def _apply_block(conn, tenant: int, batch: dict, block: dict, stats: Counter, to
         touched["trips"].add(trip_no)
         pings = block.get("gps") or []
         stats["fixes_in"] += len(pings)
-        per_vehicle: dict[int, list[list]] = defaultdict(list)
+        per_vehicle: dict[int, list[tuple[list, int | None]]] = defaultdict(list)
         for p in pings:
             r = map_gps_row(p, trip_no)
             if r is None:
@@ -268,10 +318,13 @@ def _apply_block(conn, tenant: int, batch: dict, block: dict, stats: Counter, to
                 continue
             if trip["vehicle_id"] and vid != trip["vehicle_id"]:
                 stats["fixes_other_vehicle"] += 1
-            per_vehicle[vid].append(_fix_values(cur, tenant, vid, r, batch, source))
+            # The source's own cumulative distance, when it sent one.
+            cdist = r["i_cdist"] if p.get("r_cdist") not in (None, "") else None
+            per_vehicle[vid].append((_fix_values(cur, tenant, vid, r, batch, source), cdist))
         new_total, lo_all, hi_all = 0, None, None
+        placed_by_vehicle: dict[int, list] = {}
         for vid, rows in per_vehicle.items():
-            new, lo, hi = _store_fixes(cur, tenant, vid, rows, trip_no, source, stats)
+            new, lo, hi, placed_by_vehicle[vid] = _store_fixes(cur, tenant, vid, rows, trip_no, source, stats)
             new_total += new
             if lo is not None:
                 win = touched["vehicles"].setdefault(vid, [lo, hi, 0])
@@ -289,6 +342,8 @@ def _apply_block(conn, tenant: int, batch: dict, block: dict, stats: Counter, to
             frm, to = min(frm, lo_all), max(to, hi_all)
         if window_vehicle is not None and frm is not None and to is not None:
             _update_window(cur, tenant, trip_no, window_vehicle, frm, to)
+            stats["trip_cdist_kept"] += _keep_source_cdist(cur, tenant, trip_no,
+                                                           placed_by_vehicle.get(window_vehicle, []))
         if new_total:
             cur.execute("INSERT INTO fix_batch_trip (i_batch_id, i_tenant_id, i_trip_no, i_vehicle_id, "
                         "i_new_fixes, dt_min, dt_max) VALUES (%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
