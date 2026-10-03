@@ -31,8 +31,8 @@ MAX_ENTRY_BYTES = 8 * 1024 * 1024
 
 # Never cached: live state, uploads, the refresh machinery itself, and the
 # list of runs (a new unpublished run changes it without changing the data).
-EXCLUDE = ("/api/v1/live", "/api/v1/uploads", "/api/v1/status", "/api/v1/jobs", "/api/v1/refresh",
-           "/api/v1/runs", "/api/v1/osrm")
+EXCLUDE = ("/api/v1/geo/live", "/api/v1/geo/uploads", "/api/v1/geo/status", "/api/v1/geo/jobs",
+           "/api/v1/geo/refresh", "/api/v1/geo/runs", "/api/v1/geo/osrm", "/api/v1/geo/engine")
 
 _lock = threading.Lock()
 _version: tuple[str, float] = ("", 0.0)
@@ -54,8 +54,14 @@ def read_version() -> str:
             row = cur.fetchone()
         except Exception:                      # before init-db has created geo_state
             row = None
+        # NexGen: the routing service caches on its own version too.
+        try:
+            cur.execute("SELECT s_value FROM route_state WHERE s_key='data_version'")
+            route = cur.fetchone()
+        except Exception:                      # the geofence schema has no route_state
+            route = None
     return (f"{run['i_run_id'] if run else 0}:{run['dt_summarised'] if run else ''}:"
-            f"{row['s_value'] if row else 0}")
+            f"{row['s_value'] if row else 0}:{route['s_value'] if route else 0}")
 
 
 def current_version() -> str:
@@ -76,7 +82,7 @@ def current_version() -> str:
 
 
 def cacheable(path: str) -> bool:
-    return path.startswith("/api/v1/") and not path.startswith(EXCLUDE)
+    return path.startswith("/api/v1/geo/") and not path.startswith(EXCLUDE)
 
 
 def key_of(path: str, query: str, gzip: bool) -> str:

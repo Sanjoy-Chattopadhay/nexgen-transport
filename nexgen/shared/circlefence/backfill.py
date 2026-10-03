@@ -192,13 +192,18 @@ def run(
                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                             ledger,
                         )
+                    # NexGen: the trip row belongs to the fleet service, so the
+                    # finding is kept in geofence's own trip_geofence_out (the
+                    # legacy tta_trips view joins it back in).
+                    from nexgen.core.tenancy import current_tenant_id
                     cur.execute(
-                        """UPDATE tta_trips
-                              SET dt_geofence_out = %s,
-                                  i_geofence_out_gap_min = %s,
-                                  s_geofence_out_status = %s
-                            WHERE i_trip_no = %s""",
-                        (stamp["ts"], stamp["gap"], stamp["status"], trip["i_trip_no"]),
+                        """INSERT INTO trip_geofence_out
+                              (i_tenant_id, i_trip_no, dt_geofence_out, i_geofence_out_gap_min, s_geofence_out_status)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE dt_geofence_out = VALUES(dt_geofence_out),
+                              i_geofence_out_gap_min = VALUES(i_geofence_out_gap_min),
+                              s_geofence_out_status = VALUES(s_geofence_out_status)""",
+                        (current_tenant_id(), trip["i_trip_no"], stamp["ts"], stamp["gap"], stamp["status"]),
                     )
 
                     stats["trips_scanned"] += 1

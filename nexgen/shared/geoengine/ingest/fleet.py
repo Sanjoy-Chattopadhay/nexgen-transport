@@ -102,6 +102,9 @@ def sync_trips(recent_days: int | None = None) -> dict:
     not yet closed -- what can still change -- so the background refresh
     does not re-read years of closed trips every few minutes.
     """
+    # NexGen: the feed belongs to the fleet service; geo_gps_ping, geo_trip and
+    # geo_trip_meta are views over it, so there is nothing to copy.
+    return {"skipped": "NexGen reads the fleet service's GPS directly; nothing to copy"}
     src_db = settings.src_db["database"]
     table = settings.src_trip_table
     if not table.replace("_", "").isalnum():
@@ -147,6 +150,9 @@ def sync_after(after_id: int, limit: int | None = None) -> dict:
     and trips are updated only for what arrived, never by re-aggregating the
     whole feed.
     """
+    # NexGen: the feed belongs to the fleet service; geo_gps_ping, geo_trip and
+    # geo_trip_meta are views over it, so there is nothing to copy.
+    return {"skipped": "NexGen reads the fleet service's GPS directly; nothing to copy"}
     if not _same_server():
         raise RuntimeError("source and target are on different servers; cross-server copy is not implemented")
     src_db = settings.src_db["database"]
@@ -182,6 +188,9 @@ def sync_after(after_id: int, limit: int | None = None) -> dict:
 def sync(truncate: bool = False, limit: int | None = None,
          since: datetime | None = None) -> dict:
     """Copy pings, then derive vehicles and trips from what landed."""
+    # NexGen: the feed belongs to the fleet service; geo_gps_ping, geo_trip and
+    # geo_trip_meta are views over it, so there is nothing to copy.
+    return {"skipped": "NexGen reads the fleet service's GPS directly; nothing to copy"}
     started = datetime.now()
     src_db = settings.src_db["database"]
     table = settings.src_gps_table

@@ -137,7 +137,11 @@ def cmd_import_legacy(args) -> int:
 
 
 def cmd_geo(args) -> int:
-    from nexgen.services.geofence.engine import cli as geo_cli
+    """The geofencing engine's own commands (Geo-Fencing's cli), run against
+    the geofence service's schema: `python -m nexgen geo run --publish`."""
+    import os
+    os.environ.setdefault("NEXGEN_SERVICE", "geofence")
+    from nexgen.shared.geoengine import cli as geo_cli
     return geo_cli.main(args.geo_args) or 0
 
 

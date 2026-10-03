@@ -237,12 +237,46 @@ class LiveService:
                 params.append(horizon)
             sql += " ORDER BY dt_message, id LIMIT %s"
         else:
-            sql = cols + "WHERE id > %s ORDER BY id LIMIT %s"
-            params = [last_id]
+            return self._fetch_tail(last_id)
         params.append(BATCH_ROWS)
         with geo_session() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchall()
+
+    # NexGen tail mode: "what is new" is the trips each finished fleet batch
+    # added fixes to (geo_fix_batch_trip), read a trip at a time, so the live
+    # detector never scans the GPS table. The cursor's id is
+    # batch * 10^10 + trip number: the last (batch, trip) consumed.
+    _TRIP_SPAN = 10_000_000_000
+
+    def _next_tail_trips(self, cur, last_id: int) -> list[dict]:
+        lb, lt = divmod(int(last_id or 0), self._TRIP_SPAN)
+        cur.execute("""SELECT f.i_batch_id, f.i_trip_no, f.dt_min, f.dt_max, f.i_new_fixes
+                         FROM geo_fix_batch_trip f
+                         JOIN geo_processed_batch b ON b.i_batch_id = f.i_batch_id
+                        WHERE f.i_batch_id > %s OR (f.i_batch_id = %s AND f.i_trip_no > %s)
+                        ORDER BY f.i_batch_id, f.i_trip_no LIMIT 200""", (lb, lb, lt))
+        return cur.fetchall()
+
+    def _fetch_tail(self, last_id: int):
+        rows: list[dict] = []
+        with geo_session() as conn, conn.cursor() as cur:
+            for t in self._next_tail_trips(cur, last_id):
+                cur.execute("""SELECT id, i_trip_no, s_asset_id, dt_message, d_lat, d_long, i_speed
+                                 FROM geo_gps_ping
+                                WHERE i_trip_no = %s AND dt_message BETWEEN %s AND %s AND i_batch_id = %s
+                                ORDER BY dt_message, id""", (t["i_trip_no"], t["dt_min"], t["dt_max"], t["i_batch_id"]))
+                key = int(t["i_batch_id"]) * self._TRIP_SPAN + int(t["i_trip_no"])
+                for r in cur.fetchall():
+                    r["id"] = key
+                    rows.append(r)
+                if not rows:
+                    # A trip whose fixes were all already known: step past it.
+                    rows.append({"id": key, "i_trip_no": t["i_trip_no"], "s_asset_id": None,
+                                 "dt_message": t["dt_max"], "d_lat": 0, "d_long": 0, "i_speed": None})
+                if len(rows) >= BATCH_ROWS:
+                    break
+        return rows
 
     def _exhausted(self, cursor) -> bool:
         last_ts, last_id = cursor
@@ -253,8 +287,7 @@ class LiveService:
                     "WHERE dt_message > %s OR (dt_message = %s AND id > %s)",
                     (last_ts, last_ts, last_id))
             else:
-                cur.execute("SELECT COUNT(*) n FROM geo_gps_ping WHERE id > %s",
-                            (last_id,))
+                return not self._next_tail_trips(cur, last_id)
             return cur.fetchone()["n"] == 0
 
     def _replay_origin(self) -> datetime:
@@ -262,7 +295,7 @@ class LiveService:
         if self.start_at:
             return self.start_at
         with geo_session() as conn, conn.cursor() as cur:
-            cur.execute("SELECT MIN(dt_message) a, MAX(dt_message) b FROM geo_gps_ping")
+            cur.execute("SELECT MIN(dt_first_ping) a, MAX(dt_last_ping) b FROM geo_trip")
             row = cur.fetchone()
         if not row or not row["b"]:
             return datetime.now()

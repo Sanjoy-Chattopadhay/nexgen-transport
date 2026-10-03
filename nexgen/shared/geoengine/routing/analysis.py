@@ -36,9 +36,20 @@ logger = logging.getLogger(__name__)
 
 
 def rates() -> E.Rates:
+    """The cost rates in force: services.yaml's, overridden by the client's own
+    (tenant file `cost_rates` / `thresholds.detention_free_h`, or the Admin
+    page), so one client's rates never change another's figures."""
     r = settings.routing
-    return E.Rates(per_km=r.cost_per_km, per_hour=r.cost_per_hour, detention_per_hour=r.detention_per_hour,
-                   free_hours=r.free_hours, revenue_per_km=r.revenue_per_km, tolerance_pct=r.tolerance_pct)
+    from nexgen.core.tenancy import setting
+    cr = setting("cost_rates", {}) or {}
+    free = setting("thresholds.detention_free_h", None)
+    revenue = cr.get("revenue_per_km", r.revenue_per_km)
+    return E.Rates(per_km=float(cr.get("per_km", r.cost_per_km)),
+                   per_hour=float(cr.get("per_hour", r.cost_per_hour)),
+                   detention_per_hour=float(cr.get("detention_per_hour", r.detention_per_hour)),
+                   free_hours=float(free if free is not None else r.free_hours),
+                   revenue_per_km=(float(revenue) if revenue else None),
+                   tolerance_pct=r.tolerance_pct)
 
 
 def deviation_config(mode: str) -> DeviationConfig:

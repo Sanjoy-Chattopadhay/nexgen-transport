@@ -206,7 +206,6 @@ services:
     routes:
       - /api/v1/geo/routes/*
       - /api/v1/geo/routes
-      - /api/v1/tta/trips/*/weather
       - /api/v1/routing/*
     settings:
       mode: learned         # learned | osrm

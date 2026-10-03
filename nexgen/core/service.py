@@ -187,6 +187,7 @@ class Service:
         self._routers: list[tuple[object, str]] = []
         self._startup: list[Callable[[], None]] = []
         self._ready_checks: list[tuple[str, Callable[[], object]]] = []
+        self._middlewares: list[Callable] = []
         self._shutdown = threading.Event()
         self._server = None   # uvicorn.Server, set by run()
 
@@ -209,6 +210,10 @@ class Service:
 
     def ready_check(self, name: str, fn: Callable[[], object]) -> None:
         self._ready_checks.append((name, fn))
+
+    def middleware(self, fn: Callable) -> None:
+        """An HTTP middleware (async fn(request, call_next)) for this service."""
+        self._middlewares.append(fn)
 
     # -- state -----------------------------------------------------------
     def health(self) -> dict:
@@ -296,7 +301,11 @@ class Service:
 
         app = FastAPI(title=f"NexGen Transport · {self.spec.title}", version=self.version,
                       lifespan=lifespan, docs_url="/docs")
-        app.add_middleware(GZipMiddleware, minimum_size=1024)
+        # Starlette runs the last-registered middleware outermost. Order, from
+        # the outside in: compression, the stopped-API switch, then the
+        # service's own (a response cache must see uncompressed bodies).
+        for mw in self._middlewares:
+            app.middleware("http")(mw)
 
         @app.middleware("http")
         async def api_switch(request: Request, call_next):
@@ -356,6 +365,7 @@ class Service:
             threading.Thread(target=svc._exit_soon, daemon=True).start()
             return {"stopping": svc.name}
 
+        app.add_middleware(GZipMiddleware, minimum_size=1024)
         for router, prefix in self._routers:
             app.include_router(router, prefix=prefix)
         return app

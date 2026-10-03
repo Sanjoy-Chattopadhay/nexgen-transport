@@ -285,10 +285,9 @@ def live_stats(conn=Depends(get_geo_db)):
         cursor = cur.fetchone()
         # Polled every few seconds: MIN/MAX use the dt_message index, and the
         # row count is InnoDB's estimate rather than a full scan of the feed.
-        cur.execute("SELECT MIN(dt_message) a, MAX(dt_message) b FROM geo_gps_ping")
+        cur.execute("SELECT MIN(dt_first_ping) a, MAX(dt_last_ping) b FROM geo_trip")
         feed = cur.fetchone()
-        cur.execute("""SELECT table_rows n FROM information_schema.tables
-                        WHERE table_schema = DATABASE() AND table_name = 'geo_gps_ping'""")
+        cur.execute("SELECT COALESCE(SUM(i_pings), 0) n FROM geo_trip")
         pings = (cur.fetchone() or {}).get("n") or 0
         cur.execute("SELECT COUNT(*) n FROM geo_fence WHERE b_active=1")
         fences = cur.fetchone()["n"]

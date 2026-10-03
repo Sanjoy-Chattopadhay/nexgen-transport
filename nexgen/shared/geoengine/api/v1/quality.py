@@ -41,7 +41,7 @@ def status(conn=Depends(get_geo_db)):
         # MIN/MAX come off the dt_message index in O(1); a COUNT(*) over the
         # feed is a full scan of millions of rows and this is called on every
         # page load, so the count comes from the per-trip rollup instead.
-        cur.execute("SELECT MIN(dt_message) a, MAX(dt_message) b FROM geo_gps_ping")
+        cur.execute("SELECT MIN(dt_first_ping) a, MAX(dt_last_ping) b FROM geo_trip")
         feed = cur.fetchone()
         cur.execute("SELECT COALESCE(SUM(i_pings), 0) n FROM geo_trip")
         feed["n"] = cur.fetchone()["n"]

@@ -192,6 +192,11 @@ SELECT i_waypoint_id, s_name, NULLIF(s_state_abbr, '') AS s_state_abbr FROM ref_
 CREATE OR REPLACE VIEW v1_trip_gps_window AS
 SELECT i_tenant_id, i_trip_no, i_vehicle_id, dt_from, dt_to, dt_first_fix, dt_last_fix FROM trip_gps_window;
 
+-- When each trip row last changed (an index-only read: the geofence
+-- scheduler's record watermark).
+CREATE OR REPLACE VIEW v1_trip_sync AS
+SELECT i_tenant_id, i_trip_no, dt_modified FROM trip;
+
 CREATE OR REPLACE VIEW v1_processed_batch AS
 SELECT i_batch_id, i_tenant_id, s_status, i_trips, i_fixes_in, i_fixes_new, i_fixes_dup, i_fixes_seq,
        d_seconds, s_error, dt_processed

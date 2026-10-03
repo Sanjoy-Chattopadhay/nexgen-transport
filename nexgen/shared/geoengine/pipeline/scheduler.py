@@ -110,26 +110,48 @@ def status(every_minutes: float | None = None) -> dict:
 # one pass
 # ---------------------------------------------------------------------------
 
-def _changed_trips(conn, run_id: int, ping_wm: int | None, meta_wm: str | None) -> tuple[set, set, int, str | None, int]:
-    """Trips with new fixes, trips whose record changed, and the new marks."""
+def _top_batch(conn) -> int:
+    """The newest batch the fleet service has finished storing.
+
+    NexGen: the watermark is a fleet batch id, not a ping id. A batch is
+    stored trip by trip, so only batches with a processed_batch row are
+    complete; reading fix_batch_trip past that point could see half a batch,
+    advance over it, and miss the rest for good.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT COALESCE(MAX(id), 0) m FROM geo_gps_ping")
-        top = int(cur.fetchone()["m"] or 0)
-        new_pings = 0
-        fixes: set[int] = set()
+        cur.execute("SELECT COALESCE(MAX(i_batch_id), 0) m FROM geo_processed_batch")
+        return int(cur.fetchone()["m"] or 0)
+
+
+def _meta_top(conn):
+    with conn.cursor() as cur:
+        cur.execute("SELECT MAX(dt_modified) t FROM geo_trip_sync")
+        return cur.fetchone()["t"]
+
+
+def _changed_trips(conn, run_id: int, ping_wm: int | None, meta_wm: str | None) -> tuple[set, set, int, str | None, int]:
+    """Trips with new fixes, trips whose record changed, and the new marks.
+
+    Fixes: the trips fleet batches after the watermark added fixes to
+    (geo_fix_batch_trip). Records: trips whose fleet row changed since the
+    record watermark. Both are indexed reads; nothing scans the feed.
+    """
+    top = _top_batch(conn)
+    new_pings = 0
+    fixes: set[int] = set()
+    with conn.cursor() as cur:
         if ping_wm is not None and top > ping_wm:
-            cur.execute("""SELECT i_trip_no, COUNT(*) n FROM geo_gps_ping WHERE id > %s AND id <= %s
-                            GROUP BY i_trip_no""", (ping_wm, top))
+            cur.execute("""SELECT i_trip_no, SUM(i_new_fixes) n FROM geo_fix_batch_trip
+                            WHERE i_batch_id > %s AND i_batch_id <= %s GROUP BY i_trip_no""", (ping_wm, top))
             for r in cur.fetchall():
                 fixes.add(int(r["i_trip_no"]))
-                new_pings += int(r["n"])
-        cur.execute("SELECT MAX(dt_synced) t FROM geo_trip_meta")
-        meta_top = cur.fetchone()["t"]
+                new_pings += int(r["n"] or 0)
+        meta_top = _meta_top(conn)
         records: set[int] = set()
         if meta_wm and meta_top and str(meta_top) > meta_wm:
-            cur.execute("""SELECT m.i_trip_no FROM geo_trip_meta m
+            cur.execute("""SELECT m.i_trip_no FROM geo_trip_sync m
                              JOIN geo_trip_summary s ON s.i_run_id=%s AND s.i_trip_no=m.i_trip_no
-                            WHERE m.dt_synced > %s""", (run_id, meta_wm))
+                            WHERE m.dt_modified > %s""", (run_id, meta_wm))
             records = {int(r["i_trip_no"]) for r in cur.fetchall()}
     return fixes, records - fixes, top, str(meta_top) if meta_top else meta_wm, new_pings
 
@@ -165,11 +187,8 @@ def refresh_once(trigger: str = "schedule", sync_fleet: bool = False, run_id: in
                     # First pass on this database: compare the feed with the run
                     # once, the slow way, then keep a watermark from here on.
                     stale = set(runner.stale_trips(run_id))
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT COALESCE(MAX(id), 0) m FROM geo_gps_ping")
-                        top = int(cur.fetchone()["m"] or 0)
-                        cur.execute("SELECT MAX(dt_synced) t FROM geo_trip_meta")
-                        mt = cur.fetchone()["t"]
+                    top = _top_batch(conn)
+                    mt = _meta_top(conn)
                     fixes, records, meta_top, new_pings = stale, set(), str(mt) if mt else None, None
                     stats["initialised_watermark"] = True
                 else:
@@ -186,13 +205,11 @@ def refresh_once(trigger: str = "schedule", sync_fleet: bool = False, run_id: in
                         runner._recount(run_id)
                     stats["rebuild"] = incremental.rebuild(conn, run_id, fixes | records, before,
                                                            reevaluated=fixes)
-                    try:
-                        from nexgen.shared.geoengine.routing import analysis as routing
-                        stats["routes"] = routing.analyse_trips(conn, run_id, sorted(fixes))
-                    except Exception as exc:                 # noqa: BLE001 -- routing is additive
-                        logger.warning("route analysis skipped: %s", exc)
-                        stats["routes"] = {"error": str(exc)}
+                    # NexGen: routes are the routing service's; it (and
+                    # analytics) hear about the change from this event, written
+                    # with the job row below.
                     summaries.bump_version()
+                    _announce(conn, run_id, fixes, records, stats.get("rebuild") or {})
                     state = "ok"
                 else:
                     state = "idle"
@@ -225,18 +242,26 @@ def refresh_once(trigger: str = "schedule", sync_fleet: bool = False, run_id: in
 
 
 def _sync(conn) -> dict:
-    """New fixes and changed trip records from the fleet system, read-only."""
-    from nexgen.shared.geoengine.ingest import fleet
+    """Geo-Fencing copied new fixes from Smart-Truck here. In NexGen the feed
+    is the fleet service's (geo_gps_ping is a view over it), so there is
+    nothing to copy."""
+    return {"skipped": "the fleet service stores the feed; geofence reads it directly"}
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT COALESCE(MAX(id), 0) m FROM geo_gps_ping")
-        after = int(cur.fetchone()["m"] or 0)
-    out = {"pings": fleet.sync_after(after)}
+
+def _announce(conn, run_id: int, fixes: set, records: set, rebuild: dict) -> None:
+    """Publish geo.visits.changed for routing and analytics."""
     try:
-        out["trips"] = fleet.sync_trips(recent_days=settings.scheduler.trip_sync_days)
-    except Exception as exc:                                 # noqa: BLE001
-        out["trips"] = {"error": str(exc)}
-    return out
+        from nexgen.core.events import publish
+        from nexgen.core.tenancy import current_tenant_id
+        trips = sorted(set(fixes) | set(records))
+        publish(conn, "geo.visits.changed",
+                {"run_id": run_id, "trip_nos": trips[:20000], "reevaluated": sorted(fixes)[:20000],
+                 "days": [str(d) for d in (rebuild.get("day_list") or [])][:400],
+                 "fences": list(rebuild.get("fence_list") or [])[:5000]},
+                tenant_id=current_tenant_id(), source="geofence")
+        conn.commit()
+    except Exception:                                        # noqa: BLE001 -- never fail a refresh on this
+        logger.exception("could not publish geo.visits.changed")
 
 
 # ---------------------------------------------------------------------------

@@ -88,7 +88,7 @@ def test_split_handles_doubled_and_escaped_quotes():
 
 def test_most_specific_route_wins():
     table = build_table()
-    assert resolve(table, "/api/v1/tta/trips/123/weather").service == "routing"
+    assert resolve(table, "/api/v1/tta/trips/123/weather").service == "analytics"
     assert resolve(table, "/api/v1/tta/trips/123").service == "analytics"
     assert resolve(table, "/api/v1/tta/sync/status").service == "ingestion"
     assert resolve(table, "/api/v1/tta/upload").service == "ingestion"

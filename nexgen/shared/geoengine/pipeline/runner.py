@@ -520,9 +520,11 @@ def publish_run(run_id: int) -> None:
         conn.commit()
 
 
+# geo_trip_route / geo_route_deviation belong to the routing service in
+# NexGen; it drops a deleted run's rows when it hears of the deletion.
 RUN_TABLES = TRIP_TABLES + ("geo_fence_stats", "geo_fence_day", "geo_day_summary",
                              "geo_pvisit", "geo_palert", "geo_pstop", "geo_trip_share",
-                             "geo_trip_phase", "geo_trip_route", "geo_route_deviation")
+                             "geo_trip_phase")
 
 
 # ---------------------------------------------------------------------------
@@ -540,17 +542,23 @@ def stale_trips(run_id: int) -> list[int]:
     trip whose final fix the pre-filter refused would look stale for ever.
     """
     with geo_session() as conn, conn.cursor() as cur:
+        # NexGen: the per-trip fix count is maintained by the fleet service
+        # (geo_trip.i_pings = trip.i_gps_ping_count), so no scan of the feed.
         cur.execute("""SELECT g.i_trip_no
-                         FROM (SELECT i_trip_no, COUNT(*) n FROM geo_gps_ping GROUP BY i_trip_no) g
+                         FROM geo_trip g
                          LEFT JOIN geo_trip_summary s ON s.i_run_id = %s AND s.i_trip_no = g.i_trip_no
-                        WHERE s.i_trip_no IS NULL OR s.i_pings_read <> g.n
+                        WHERE s.i_trip_no IS NULL OR s.i_pings_read <> g.i_pings
                         ORDER BY g.i_trip_no""", (run_id,))
         return [r["i_trip_no"] for r in cur.fetchall()]
 
 
 def _upsert_trips(trip_nos: list[int]) -> None:
     """geo_trip rows for trips the feed extended or introduced, so every
-    later join -- a trail's vehicle, a trip's span -- sees the new fixes."""
+    later join -- a trail's vehicle, a trip's span -- sees the new fixes.
+
+    NexGen: geo_trip is a view over the fleet service, which keeps every
+    trip's span and fix count as it stores the fixes. Nothing to write."""
+    return
     for i in range(0, len(trip_nos), 1000):
         chunk = trip_nos[i:i + 1000]
         marks = ",".join(["%s"] * len(chunk))
