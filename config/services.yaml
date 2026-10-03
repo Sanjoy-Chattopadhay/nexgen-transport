@@ -1,0 +1,370 @@
+# NexGen Transport -- every service, role, route, schedule and external API.
+#
+# This is the one place the system's shape is written down. The supervisor
+# reads it to start processes, the gateway to route requests, and each service
+# to configure itself. Secrets are never written here: they are referenced as
+# ${NAME} (or ${NAME:-default}) and read from .env, which git ignores.
+#
+# Database connections live in database.yaml; per-client settings in tenants/.
+version: 1
+
+product:
+  name: NexGen Transport
+  # Every DATETIME is the source's wall clock in this zone, as both legacy
+  # applications store it. Window maths for the upstream API uses it too.
+  timezone: Asia/Kolkata
+  default_tenant: tata-steel
+
+run:
+  host: 127.0.0.1
+  # One public port: the gateway serves the web app and routes /api/v1/*.
+  # 8100-8107 avoid both legacy apps (Smart-Truck 8000/8001/5173,
+  # Geo-Fencing 8090/5190), so all three run side by side during the parallel run.
+  gateway_port: 8100
+  web_dist: web/dist
+  logs_dir: logs
+  # A crashed service is restarted at most this many times in this window
+  # before the supervisor gives up and marks it crashed on the developer page.
+  restart_limit: 5
+  restart_window_s: 300
+  # Graceful stop: ask the service to shut down, then kill it after this long.
+  stop_timeout_s: 15
+
+auth:
+  # No login for now (decided 2026-10-03). Every request acts as the default
+  # tenant. The tenant context is still threaded through, so login can be added
+  # without touching tables.
+  mode: none
+
+events:
+  # mysql = transactional outbox in nx_events, polled. redis = Redis Streams
+  # (not built yet; the interface is the same).
+  driver: mysql
+  poll_ms: 1000
+  batch: 200
+  retention_days: 14
+  # An event id that is missing while later ids exist belongs to a transaction
+  # still in flight (ids are allocated before commit). Wait this long for it
+  # before treating it as rolled back.
+  gap_timeout_s: 60
+
+cache:
+  # Responses are cached per tenant and data version (see nexgen/core/cache.py).
+  driver: memory
+  max_entries: 2000
+
+# ---------------------------------------------------------------------------
+# Services. Ports are internal; clients only ever see the gateway.
+# `routes` are the public paths each service answers, matched most-specific
+# first, so one legacy router whose paths now belong to different services
+# keeps every URL it had.
+# ---------------------------------------------------------------------------
+services:
+
+  platform:
+    title: Platform
+    description: Tenants, settings, module switches, reference data, backups.
+    port: 8101
+    roles:
+      api: { autostart: true }
+      ops: { autostart: true, description: "backups and partition upkeep" }
+    routes:
+      - /api/v1/platform/*
+      - /api/v1/tta/maintenance/*
+    settings:
+      backup_dir: backups
+      backup_keep: 14
+      mysql_bin_dir: "${MYSQL_BIN_DIR:-C:/Program Files/MySQL/MySQL Server 8.0/bin}"
+      schedules:
+        backup: "0 1 * * *"
+        partitions: "30 0 * * *"
+
+  ingestion:
+    title: Ingestion
+    description: The only part of the system that calls the TMS API or reads uploaded files.
+    port: 8102
+    roles:
+      api: { autostart: true }
+      worker: { autostart: true, description: "TMS lanes, uploads, imports" }
+    routes:
+      - /api/v1/ingestion/*
+      - /api/v1/tta/sync/*
+      - /api/v1/tta/sync
+      - /api/v1/tta/schema
+      - /api/v1/tta/upload
+      - /api/v1/tta/ingest-path
+      - /api/v1/tta/progress
+      - /api/v1/migrate/*
+    settings:
+      upload_dir: uploads
+      # Raw payloads kept for replay and audit.
+      raw_retention_days: 90
+      # Landing rows are transient: dropped this long after the fleet
+      # processor has consumed them.
+      landing_retention_days: 7
+      # Where the CSV/Excel migration looks for files (Smart-Truck DATA_DIR).
+      data_dir: "${DATA_DIR:-data/import}"
+      trip_csv_filename: "${TRIP_CSV_FILENAME:-trip_data.csv}"
+      waypoint_file_pattern: "${WAYPOINT_FILE_PATTERN:-Waypoint_*.xls}"
+      # Geo-Fencing's eTrans master extract (never committed).
+      masters_dir: "${MASTERS_DIR:-Masters}"
+      site_csv: "${SITE_CSV:-TBL_SITE_GEO_20260128.CSV}"
+      site_dtls_csv: "${SITE_DTLS_CSV:-TBL_SITE_GEO_DTLS_20260128.CSV}"
+      site_polygon_csv: "${SITE_POLYGON_CSV:-tbl_site_polygon.csv}"
+
+  fleet:
+    title: Fleet data
+    description: Preprocessing (normalise, deduplicate, clean, fit) and the fleet's master data, trips and GPS.
+    port: 8103
+    roles:
+      api: { autostart: true }
+      processor: { autostart: true, description: "turns raw batches into clean trips and fixes" }
+    routes:
+      - /api/v1/fleet/*
+    settings:
+      gps:
+        # Accept and store everything. A fix is never dropped on the way in;
+        # the pre-filter only flags it (c_flag), so a run can choose to use
+        # or ignore flagged fixes and nothing is lost either way.
+        accept_all: true
+        # When a source delivers already-filtered positions (an OSRM-style
+        # map-matched feed), they land in the same gps_fix table, marked
+        # c_source='F'. `replace` makes them replace the raw fixes of the same
+        # vehicle and window; `merge` keeps both, keyed by time.
+        filtered_policy: replace
+        # Fixes kept online; older months are archived to files, then dropped.
+        retention_days: "${GPS_RETENTION_DAYS:-180}"
+        archive_dir: archive
+      prefilter:
+        # Geo-Fencing's dedupe / resequence / teleport gate. Optional by
+        # decision (2026-10-03): off means every stored fix goes to the fit and
+        # the detector exactly as received. Every run records which it used.
+        enabled: true
+      fit:
+        # `fitted` = detection on fitted positions; `raw` = on the fixes as
+        # stored. Defaults measured on the 5.1M-fix corpus (docs/PIPELINE.md).
+        variant: "${FIT_VARIANT:-fitted}"
+        still_kmph: 5.0
+        window_fixes: 3
+        window_seconds: 900.0
+        still_spread_m: 25.0
+        spike_m: 100.0
+        spike_base_m: 30.0
+        spike_max_dt_s: 150.0
+        stop_min_seconds: 180.0
+        gap_min_seconds: 300.0
+        gap_moved_m: 300.0
+
+  geofence:
+    title: Geofencing
+    description: Fences, crossings, visits, the physical ledger, trip phases and the live detector.
+    port: 8104
+    roles:
+      api: { autostart: true }
+      detector: { autostart: true, description: "re-evaluates trips whose trails changed" }
+      live: { autostart: false, description: "streaming detector on newly stored fixes" }
+    routes:
+      - /api/v1/geo/*
+      - /api/v1/geofence/*
+    settings:
+      detector:
+        hysteresis_m: "${GEO_HYSTERESIS_M:-25.0}"
+        confirm_seconds: "${GEO_CONFIRM_SECONDS:-90.0}"
+        escape_m: "${GEO_ESCAPE_M:-250.0}"
+        max_plausible_kmph: "${GEO_MAX_PLAUSIBLE_KMPH:-150.0}"
+        max_gap_seconds: "${GEO_MAX_GAP_SECONDS:-1800.0}"
+        default_tolerance_m: "${GEO_DEFAULT_TOLERANCE_M:-0.0}"
+        adaptive_band: true
+        band_fraction: 0.5
+        min_band_m: 5.0
+      refresh:
+        # The detector's safety-net pass (events drive it; this catches
+        # anything an outage left behind).
+        every_minutes: 15.0
+        trip_sync_days: 45
+        workers: 0          # 0 = min(4, cpu_count - 1)
+        default_window_days: 90
+      live:
+        mode: tail          # tail | replay
+        speed: 300
+        window_hours: 72
+      ledger_retention_days: 730
+      live_event_retention_days: 30
+
+  routing:
+    title: Routes and cost
+    description: Plans, journeys against plans, deviation, cost at configured rates, weather.
+    port: 8105
+    roles:
+      api: { autostart: true }
+      worker: { autostart: true, description: "analyses routes of changed trips" }
+    routes:
+      - /api/v1/geo/routes/*
+      - /api/v1/geo/routes
+      - /api/v1/tta/trips/*/weather
+      - /api/v1/routing/*
+    settings:
+      mode: learned         # learned | osrm
+      # Rupee rates are placeholders until the fleet's own figures arrive;
+      # tenant files override them. Present money "at the configured rates".
+      cost_per_km: 28.0
+      cost_per_hour: 150.0
+      detention_per_hour: 150.0
+      free_hours: 4.0
+      revenue_per_km: 0      # 0 = unset: variance only, no margin
+      tolerance_pct: 3.0
+      truck_time_factor: 1.25
+      rest_min_per_4h: 30.0
+      min_plan_km: 10.0
+      off_m: 300.0
+      on_m: 150.0
+      confirm_s: 180.0
+      escape_m: 2000.0
+      terminal_m: 1500.0
+      long_stop_s: 900.0
+      learned_off_m: 600.0
+      learned_on_m: 300.0
+      learned_terminal_m: 3000.0
+
+  analytics:
+    title: Analytics
+    description: KPIs, dashboards, reports, drill-downs, network, hotspots, speed, partners.
+    port: 8106
+    roles:
+      api: { autostart: true }
+      kpi: { autostart: true, description: "keeps every precomputed KPI current" }
+    routes:
+      - /api/v1/analytics/*
+      - /api/v1/dashboard/*
+      - /api/v1/drivers/*
+      - /api/v1/drivers
+      - /api/v1/trips/*
+      - /api/v1/trips
+      - /api/v1/routes/*
+      - /api/v1/routes
+      - /api/v1/vehicles/*
+      - /api/v1/vehicles
+      - /api/v1/locations/*
+      - /api/v1/locations
+      - /api/v1/consignors/*
+      - /api/v1/consignors
+      - /api/v1/consignees/*
+      - /api/v1/consignees
+      - /api/v1/transporters/*
+      - /api/v1/transporters
+      - /api/v1/hotspots/*
+      - /api/v1/speed/*
+      - /api/v1/manual/*
+      - /api/v1/manual
+      - /api/v1/tta/*
+    settings:
+      dashboard_ttl_s: 600
+      # Smart-Truck's consignor scoping (multi-tenant by consignor).
+      consignor_query_param: "${CONSIGNOR_QUERY_PARAM:-consignor_id}"
+      consignor_route_prefix: "${CONSIGNOR_ROUTE_PREFIX:-consignor}"
+      consignor_rollup_id: "${CONSIGNOR_ROLLUP_ID:-0}"
+      default_consignor_id: "${DEFAULT_CONSIGNOR_ID:-}"
+      schedules:
+        waypoint_registry_hours: 6
+        reconcile: "0 4 * * *"
+        hotspots: "30 3 * * *"
+        live_kpis_s: 60
+      # Batch the touched keys of a burst of events into one recompute.
+      debounce_s: 30
+
+  ml:
+    title: Intelligence
+    description: ETA, SLA, anomaly, driver, fatigue, demand and route models.
+    port: 8107
+    roles:
+      api: { autostart: true }
+      trainer: { autostart: false, description: "scores open trips, retrains weekly" }
+    routes:
+      - /api/v1/ml/*
+      - /api/v1/ml
+    settings:
+      models_dir: "${ML_MODELS_DIR:-ml_models}"
+      retrain: "0 1 * * 0"
+      # Subscription keys for external callers (Smart-Truck's ML tiers).
+      api_auth_enabled: "${ML_API_AUTH_ENABLED:-0}"
+      api_keys: "${ML_API_KEYS:-}"
+
+# ---------------------------------------------------------------------------
+# External APIs. Each is called by exactly one service.
+# ---------------------------------------------------------------------------
+integrations:
+  tms:
+    # eTrans TMS. Called only by ingestion.
+    auth_url: "${TMS_AUTH_URL:-https://v7.etranssolutions.com:9083/auth/authenticate}"
+    refresh_url: "${TMS_REFRESH_URL:-}"
+    base_url: "${TMS_API_BASE_URL:-}"
+    username: "${TMS_USERNAME:-}"
+    auth_key: "${TMS_AUTH_KEY:-}"
+    access_mode: "${TMS_ACCESS_MODE:-EXT}"
+    token_skew_s: "${TMS_TOKEN_SKEW_SECONDS:-60}"
+    token_ttl_s: "${TMS_TOKEN_TTL_SECONDS:-600}"
+    timeout_s: "${TMS_API_TIMEOUT:-60}"
+    entity_ids: "${TMS_ENTITY_IDS:-}"
+    endpoints:
+      trips_zonal: "${TMS_TRIP_ENDPOINT:-/vehicle/track/ttaReport}"
+      trips_local: "${TMS_LOCAL_TRIP_ENDPOINT:-/vehicle/track/tripDetailsTtaLocalReport}"
+      gps: "${TMS_GPS_ENDPOINT:-/vehicle/trip-analysis/waypoints}"
+    trip_source: "${TMS_TRIP_SOURCE:-tta_report}"
+    trip_status: "${TMS_TRIP_STATUS:-Close}"
+    closed_reason: "${TMS_CLOSED_REASON:-All}"
+    local_trip_status: "${TMS_LOCAL_TRIP_STATUS:-C}"
+    trip_date_format: "${TMS_TRIP_DATE_FORMAT:-%Y/%m/%d}"
+    gps_datetime_format: "${TMS_GPS_DATETIME_FORMAT:-%d/%m/%Y %H:%M}"
+    local_trip_datetime_format: "${TMS_LOCAL_TRIP_DATETIME_FORMAT:-}"
+    # GPS delivered by this source: raw device fixes, or already filtered
+    # (map-matched). Filtered fixes go to the same table, marked as such.
+    gps_kind: raw
+    gps_workers: "${TMS_GPS_WORKERS:-8}"
+    gps_retries: "${TMS_GPS_RETRIES:-3}"
+    gps_retry_backoff: "${TMS_GPS_RETRY_BACKOFF:-1.5}"
+    gps_max_concurrency: "${TMS_GPS_MAX_CONCURRENCY:-8}"
+    fetch_retries: "${TMS_FETCH_RETRIES:-4}"
+    fetch_retry_backoff: "${TMS_FETCH_RETRY_BACKOFF:-3.0}"
+    ingest_deadlock_retries: "${TMS_INGEST_DEADLOCK_RETRIES:-3}"
+    max_window_hours: "${TMS_MAX_WINDOW_HOURS:-24}"
+    lag_alert_intervals: "${TMS_LAG_ALERT_INTERVALS:-3}"
+    boot_catchup: "${TMS_BOOT_CATCHUP:-1}"
+    boot_catchup_delay_s: "${TMS_BOOT_CATCHUP_DELAY_SECONDS:-60}"
+    boot_catchup_min_gap_min: "${TMS_BOOT_CATCHUP_MIN_GAP_MINUTES:-10}"
+    lanes:
+      # Off until switched on from the Ingestion page: the legacy
+      # Smart-Truck app may still be pulling the same feed, and two pullers
+      # would double the load on the upstream.
+      zonal: { enabled: false, every_min: 30, lookback_min: 120 }
+      local: { enabled: false, every_min: 20, lookback_min: 180 }
+    waypoint_refresh_hours: "${TMS_WAYPOINT_REFRESH_HOURS:-6}"
+
+  osrm:
+    # Optional and off by default. Every stage that uses it has defined
+    # behaviour without it, and every run records which it got.
+    url: "${OSRM_URL:-}"
+    profile: "${OSRM_PROFILE:-driving}"
+    timeout_s: 15.0
+    match_chunk: 100
+    match_overlap: 10
+    radius_m: 15.0
+    max_snap_m: 30.0
+    min_confidence: 0.0
+    snap_moves: true
+    route_gaps: true
+
+  weather:
+    url: https://api.open-meteo.com/v1
+
+  llm:
+    # Azure OpenAI narratives (analytics). Empty key = rule-based text.
+    api_key: "${AZURE_OPENAI_API_KEY:-}"
+    endpoint: "${AZURE_OPENAI_ENDPOINT:-}"
+    chat_deployment: "${AZURE_OPENAI_CHAT_DEPLOYMENT_NAME:-gpt-4.1}"
+    embedding_deployment: "${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME:-text-embedding-3-small}"
+    api_version: "${AZURE_OPENAI_VERSION:-2024-12-01-preview}"
+    openai_api_key: "${OPENAI_API_KEY:-}"
+
+logging:
+  level: "${LOG_LEVEL:-INFO}"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

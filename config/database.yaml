@@ -1,0 +1,53 @@
+# NexGen Transport -- every database connection, in one file.
+#
+# One MySQL 8 server to start, one schema per service. In production give each
+# service its own MySQL user with rights on its own schema only (see
+# credentials below); a service then physically cannot read another's private
+# tables, and reads across services go through the owner's published v1_*
+# views. Secrets are referenced as ${NAME} and live in .env.
+version: 1
+
+servers:
+  primary:
+    host: "${DB_HOST:-localhost}"
+    port: "${DB_PORT:-3306}"
+  # replica:                      # later: analytics reads from a replica
+  #   host: "${DB_REPLICA_HOST}"
+  #   port: 3306
+
+# Connection settings shared by every schema.
+pool:
+  charset: utf8mb4
+  connect_timeout_s: 30
+  read_timeout_s: 600
+  write_timeout_s: 600
+
+credentials:
+  # Development: one user for everything. Production: one user per service,
+  # e.g.  fleet: { user: nx_fleet, password: "${DB_PASS_FLEET}" }
+  default:
+    user: "${DB_USER:-root}"
+    password: "${DB_PASSWORD:-}"
+
+# schema key -> database name. Keys are what the code asks for; names are
+# what MySQL calls them, so a second deployment on the same server can use
+# other names without a code change.
+schemas:
+  events: nx_events        # outbox, consumer offsets, job runs, service state
+  platform: nx_platform
+  reference: nx_ref        # states, districts, code lists (read by all)
+  ingestion: nx_ingest
+  fleet: nx_fleet
+  geofence: nx_geo
+  routing: nx_route
+  analytics: nx_analytics
+  ml: nx_ml
+
+# The two legacy databases. Opened READ ONLY (SET SESSION TRANSACTION READ
+# ONLY), so an accidental write raises MySQL error 1792 instead of changing
+# them. Used only by the one-time import and by the comparison reports.
+legacy:
+  smart_truck:
+    database: "${LEGACY_ST_DB:-smart_truck}"
+  geofencing:
+    database: "${LEGACY_GEO_DB:-geofencing}"

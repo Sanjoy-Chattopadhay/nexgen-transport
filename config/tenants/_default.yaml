@@ -1,0 +1,51 @@
+# Defaults every tenant (client) starts from. A tenant file overrides any key;
+# changes made on the Admin page override the tenant file. Only business
+# settings live here; accuracy-tuned engine settings stay in services.yaml.
+modules:
+  overview: true
+  live: true
+  trips: true
+  fleet: true
+  partners: true
+  network: true
+  geofencing: true
+  routing: true
+  analytics: true
+  intelligence: true
+  data: true
+  developer: true
+
+branding:
+  product_name: NexGen Transport
+  # teal is the default look; classic (the original blue-grey) stays selectable.
+  theme: teal
+  logo: ""
+
+features:
+  osrm_routing: false
+  inferred_visits: false
+  llm_narratives: true
+
+thresholds:
+  # On-time: an arrival this many minutes after ETA still counts as on time.
+  on_time_grace_min: 0
+  # OTD target drawn on the executive gauge.
+  otd_target_pct: 95
+  # Road speed limit used where a fence has none.
+  overspeed_kmph: 60
+  # Detention at loading/unloading is charged beyond this many hours.
+  detention_free_h: 4
+
+# Rates for cost figures. Placeholders until the client gives its own; every
+# money figure is shown "at the configured rates".
+cost_rates:
+  per_km: 28
+  per_hour: 150
+  detention_per_hour: 150
+  revenue_per_km: 0
+
+labels: {}
+
+# TMS entities (consignor ids) this tenant pulls. Empty = whatever the
+# ingestion lanes are configured with.
+source_entities: []

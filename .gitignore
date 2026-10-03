@@ -1,0 +1,95 @@
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+# `.env*`, not just `.env`: Smart-Truck once committed a file named
+# `.env.bak.before-lanes` holding live keys, because it matched neither `.env`
+# nor `*.env`. Ignoring the whole class is easier to reason about than
+# maintaining exceptions. What a clone needs is in docs/CONFIGURATION.md.
+.env*
+*.local
+*.secret
+
+# ---------------------------------------------------------------------------
+# Client data
+# ---------------------------------------------------------------------------
+# The eTrans master extract, trip exports and any spreadsheet are the client's
+# operational data: real site names and coordinates. Never committed.
+Masters/
+*.CSV
+*.csv
+*.xlsx
+*.xls
+*.sql.gz
+*.sql.zip
+*.dump
+*.bak
+web/src/guide-data/
+
+# Source PDFs and the raw per-state GeoJSON the base map is built from.
+# The built layers (data/india_states.json, data/india_districts.json,
+# data/nh_fee_plazas.json) ARE committed: no map draws without them.
+data/*.pdf
+data/source_states/
+
+# Runtime output
+logs/
+out/
+uploads/
+archive/
+backups/
+state/
+*.log
+
+# ---------------------------------------------------------------------------
+# Models and data artefacts
+# ---------------------------------------------------------------------------
+ml_models/
+*.joblib
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.onnx
+*.npy
+*.npz
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+node_modules/
+web/dist/
+web/*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Editors, OS, local tooling
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+.claude/worktrees/
+.claude/settings.local.json

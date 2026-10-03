@@ -1,0 +1,13 @@
+# Tata Steel. Overrides _default.yaml; anything not listed is inherited.
+tenant:
+  id: 1
+  code: tata-steel
+  name: Tata Steel
+  timezone: Asia/Kolkata
+
+branding:
+  product_name: NexGen Transport
+  theme: teal
+
+labels:
+  consignee: Customer

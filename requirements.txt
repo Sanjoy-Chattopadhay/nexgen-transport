@@ -1,0 +1,42 @@
+# NexGen Transport -- Python 3.11+ (developed on 3.13).
+#
+# Web and runtime
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1               # the gateway's streaming proxy, service-to-service calls
+python-multipart==0.0.20    # file uploads
+pydantic==2.10.4
+pydantic-settings==2.7.1
+jinja2>=3.1
+aiofiles==24.1.0
+
+# Configuration
+pyyaml>=6.0.2
+python-dotenv==1.0.1
+tzdata>=2024.2              # Asia/Kolkata on Windows, where there is no system zone database
+
+# Database
+pymysql==1.1.1
+cryptography>=44.0.0        # pymysql needs it for MySQL 8 caching_sha2_password
+sqlalchemy==2.0.36          # used by parts of the analytics code
+
+# Supervisor
+psutil>=6.1.0               # process trees, memory and CPU on the developer page
+
+# Scheduling and data
+apscheduler==3.10.4
+numpy>=2.2
+pandas==2.2.3
+openpyxl==3.1.5
+xlrd==2.0.1
+requests==2.32.3
+
+# Machine learning (the ml service). torch is optional: the LSTM model falls
+# back to numpy without it, and it is a 2 GB download.
+scikit-learn==1.6.1
+xgboost==2.1.3
+lightgbm==4.5.0
+joblib==1.4.2
+
+# Tests
+pytest>=8.0
