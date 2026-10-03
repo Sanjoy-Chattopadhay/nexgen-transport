@@ -85,6 +85,8 @@ def build() -> Service:
         svc.include(module.router, prefix="/api/v1")
     from nexgen.services.analytics.api import locations
     svc.include(locations.router)            # carries its own /api/v1/locations prefix
+    from nexgen.services.analytics import proof
+    svc.include(proof.router, prefix="/api/v1")   # how every figure is calculated, with its records
 
     kpi = svc.worker("kpi")
     kpi.consumer("kpi", ["fleet.trips.changed"], _on_trips_changed, batch=50)

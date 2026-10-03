@@ -257,6 +257,8 @@ services:
       - /api/v1/transporters
       - /api/v1/hotspots/*
       - /api/v1/hotspots
+      - /api/v1/proof/*
+      - /api/v1/proof
       - /api/v1/speed/*
       - /api/v1/manual/*
       - /api/v1/manual

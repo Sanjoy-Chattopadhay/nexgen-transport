@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { MapPin, Users, Truck, Gauge, Target, TrendingUp, Clock, ShieldCheck, AlertTriangle, Brain, Sparkles, ArrowRight, Search, BarChart3 } from 'lucide-react';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import DateRangeFilter from '../components/ui/DateRangeFilter';
 import AreaChart from '../components/charts/AreaChart';
 import Spinner from '../components/ui/Spinner';
@@ -228,6 +229,8 @@ export default function Dashboard() {
     empty: 'No vehicles ran a trip in this range.',
   });
 
+  const proofParams = { date_from: from, date_to: to };
+
   const etaColor = summary ? (summary.eta_success_rate != null && summary.eta_success_rate >= 90 ? 'green' : summary.eta_success_rate != null && summary.eta_success_rate >= 80 ? 'amber' : 'red') : 'red';
 
   return (
@@ -236,20 +239,27 @@ export default function Dashboard() {
         note={summary ? `${formatNumber(summary.total_trips)} trips in range` : undefined} />
 
       {sLoad ? <Spinner /> : summary && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+        // Every tile opens to how it is calculated and the records behind it.
+        <ProofGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
           <KPICard label="Total Trips" value={formatNumber(summary.total_trips)} icon={MapPin} color="blue"
-            info={KPI_INFO.totalTrips} onDrill={drillTrips} drillLabel="See trips in range" />
+            info={KPI_INFO.totalTrips} onDrill={drillTrips} drillLabel="See trips in range"
+            proof={{ dataset: 'dashboard.trips', params: proofParams, value: summary.total_trips }} />
           <KPICard label="Active Drivers" value={formatNumber(summary.total_drivers)} icon={Users} color="green"
-            info={KPI_INFO.activeDrivers} onDrill={drillDrivers} drillLabel="See active drivers" />
+            info={KPI_INFO.activeDrivers} onDrill={drillDrivers} drillLabel="See active drivers"
+            proof={{ dataset: 'dashboard.drivers', params: proofParams, value: summary.total_drivers }} />
           <KPICard label="Vehicles" value={formatNumber(summary.total_vehicles)} icon={Truck} color="amber"
-            info={KPI_INFO.vehicles} onDrill={drillVehicles} drillLabel="See active vehicles" />
+            info={KPI_INFO.vehicles} onDrill={drillVehicles} drillLabel="See active vehicles"
+            proof={{ dataset: 'dashboard.vehicles', params: proofParams, value: summary.total_vehicles }} />
           <KPICard label="Total Distance" value={formatDistance(summary.total_distance_km)} icon={Gauge} color="purple"
-            info={KPI_INFO.totalDistance} />
+            info={KPI_INFO.totalDistance}
+            proof={{ dataset: 'dashboard.distance', params: proofParams, value: summary.total_distance_km }} />
           <KPICard label="Avg Speed" value={formatSpeed(summary.avg_speed_kmph)} icon={TrendingUp} color="cyan"
-            info={KPI_INFO.avgSpeed} />
+            info={KPI_INFO.avgSpeed}
+            proof={{ dataset: 'dashboard.speed', params: proofParams, value: summary.avg_speed_kmph }} />
           <KPICard label="ETA Success Rate" value={formatPercent(summary.eta_success_rate)} icon={Target} color={etaColor}
-            info={KPI_INFO.etaSuccess} />
-        </div>
+            info={KPI_INFO.etaSuccess}
+            proof={{ dataset: 'dashboard.eta', params: proofParams, value: summary.eta_success_rate }} />
+        </ProofGrid>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
