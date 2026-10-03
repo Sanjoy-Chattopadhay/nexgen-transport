@@ -6,6 +6,7 @@
     status                    what is running (asks the gateway)
     start|stop|restart <svc>  steer one service (asks the gateway)
     import-legacy [...]       copy the two legacy databases in (read-only on them)
+    reset [--start-from DATE] a fresh, empty NexGen database that builds forward
     geo <command> ...         the geofencing engine's own commands
 """
 
@@ -157,6 +158,39 @@ def cmd_import_legacy(args) -> int:
     return 0
 
 
+def cmd_reset(args) -> int:
+    from nexgen.core.logs import setup_logging
+    from nexgen.tools.reset import ResetRefused, nexgen_databases, parse_start, run_reset
+
+    setup_logging("reset")
+    start = None
+    if args.start_from:
+        start = parse_start(args.start_from)
+        if start is None:
+            print(f"--start-from {args.start_from!r} is not a date (use YYYY-MM-DD or YYYY-MM-DD HH:MM)")
+            return 2
+    try:
+        names = nexgen_databases()
+    except ResetRefused as exc:
+        print(exc)
+        return 2
+    print("This drops every NexGen database and its data:")
+    print("  " + ", ".join(names))
+    print("The legacy smart_truck and geofencing databases are not touched.")
+    if start is not None:
+        print(f"Afterwards the sync lanes build the data forward from {start:%d-%m-%Y %H:%M}.")
+    if not args.yes and input("Type RESET to continue: ").strip() != "RESET":
+        print("Nothing was changed.")
+        return 1
+    try:
+        report = run_reset(start_from=start, masters_dir=args.masters)
+    except ResetRefused as exc:
+        print(exc)
+        return 2
+    print(json.dumps(report, indent=2, default=str))
+    return 0
+
+
 def cmd_geo(args) -> int:
     """The geofencing engine's own commands (Geo-Fencing's cli), run against
     the geofence service's schema: `python -m nexgen geo run --publish`."""
@@ -200,6 +234,12 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--parts", help="comma-separated parts (default: all)")
     il.add_argument("--limit-trips", type=int, default=None, help="import only this many trips (trial runs)")
     il.set_defaults(fn=cmd_import_legacy)
+
+    rs = sub.add_parser("reset", help="drop NexGen's databases and start fresh (legacy ones untouched)")
+    rs.add_argument("--start-from", help="build forward from this date, e.g. 2026-10-04")
+    rs.add_argument("--masters", help="folder with the eTrans master CSVs (default: Masters/)")
+    rs.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    rs.set_defaults(fn=cmd_reset)
 
     g = sub.add_parser("geo", help="geofencing engine commands", add_help=False)
     g.add_argument("geo_args", nargs=argparse.REMAINDER)

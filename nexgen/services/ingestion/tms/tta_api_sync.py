@@ -616,22 +616,41 @@ def _mark_boot_catchup(conn, lane: Lane, ts: datetime) -> None:
         logger.warning("Could not record boot catch-up for %s: %s", lane.key, e)
 
 
-def start_from() -> datetime | None:
-    """The fresh-start floor (integrations.tms.start_from), or None.
+START_FROM_KEY = "tms_start_from"
+
+
+def start_from(conn=None) -> datetime | None:
+    """The fresh-start floor, or None.
 
     A database started fresh on a date builds forward from it: no lane
     fetches anything before it, and nothing before it is filed as missing.
+    `python -m nexgen reset --start-from DATE` stores the date in the new
+    database (app_settings 'tms_start_from'), so it travels with the data;
+    integrations.tms.start_from in services.yaml is the fallback.
     """
-    raw = settings.TMS_START_FROM
+    raw = None
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT s_value FROM app_settings WHERE s_key=%s", (START_FROM_KEY,))
+                row = cur.fetchone()
+            if row and row.get("s_value"):
+                val = row["s_value"]
+                raw = (json.loads(val) if isinstance(val, str) else val).get("from")
+        except Exception:  # noqa: BLE001 -- the config fallback still applies
+            logger.exception("could not read %s", START_FROM_KEY)
+    raw = raw or settings.TMS_START_FROM
     if not raw:
         return None
-    dt = parse_dt(raw)
+    from nexgen.tools.reset import parse_start
+    dt = parse_start(raw)
     if dt is None:
-        logger.error("integrations.tms.start_from %r is not a date; ignoring it", raw)
+        logger.error("start_from %r is not a date; ignoring it", raw)
     return dt
 
 
-def lane_window_start(watermark: datetime | None, lookback: timedelta, now: datetime) -> datetime:
+def lane_window_start(watermark: datetime | None, lookback: timedelta, now: datetime,
+                      floor: datetime | None) -> datetime:
     """Where a lane's next window starts, before the max-window clamp.
 
     Normally the watermark minus a lookback overlap (re-fetched rows dedupe),
@@ -641,7 +660,6 @@ def lane_window_start(watermark: datetime | None, lookback: timedelta, now: date
     the Data sync page shows, so the screen says what will really be pulled.
     """
     start = (watermark or now) - lookback
-    floor = start_from()
     if floor is not None:
         if watermark is None or start < floor:
             start = floor
@@ -671,7 +689,8 @@ def plan_boot_catchup(conn, lane: Lane, enabled: bool,
         (get_sync_config(conn, lane) or {}).get("lookback_minutes") or lane.default_lookback))
     watermark = get_watermark(conn, lane)
     floor = now - timedelta(hours=settings.TMS_MAX_WINDOW_HOURS)
-    desired_start = lane_window_start(watermark, lookback, now)
+    fresh_from = start_from(conn)
+    desired_start = lane_window_start(watermark, lookback, now, fresh_from)
     window_start = max(desired_start, floor)
     plan = {
         "lane": lane.key,
@@ -693,12 +712,13 @@ def plan_boot_catchup(conn, lane: Lane, enabled: bool,
     if not enabled:
         plan["reason"] = "lane disabled"
         return plan
+    plan["start_from"] = fresh_from.isoformat() if fresh_from else None
     if watermark is None:
-        if start_from() is not None:
+        if fresh_from is not None:
             # A fresh database with a start date: pull from it now rather than
             # wait a whole interval for the first tick.
             plan["should_run"] = True
-            plan["reason"] = f"fresh start — first pull from {start_from().isoformat()}"
+            plan["reason"] = f"fresh start — first pull from {fresh_from.isoformat()}"
             if reserve:
                 _mark_boot_catchup(conn, lane, datetime.now())
             return plan
@@ -884,7 +904,7 @@ def run_sync(conn=None, trigger: str = "scheduled", lane_key: str = ZONAL) -> di
         watermark = get_watermark(conn, lane)
         # Always re-fetch a lookback overlap so nothing slips between runs; the
         # DB dedup absorbs the re-fetched rows. Never before start_from.
-        window_start = lane_window_start(watermark, lookback, window_end)
+        window_start = lane_window_start(watermark, lookback, window_end, start_from(conn))
         # A lane that holds its watermark (nothing published yet) must not let
         # the window grow without bound over a long quiet period.
         floor = window_end - timedelta(hours=settings.TMS_MAX_WINDOW_HOURS)

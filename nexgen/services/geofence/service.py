@@ -26,8 +26,29 @@ from nexgen.core.service import Service
 logger = logging.getLogger(__name__)
 
 
+def _bootstrap_run() -> None:
+    """A database with no published run gets one: the whole feed, evaluated and
+    published, so the refresh loop has a run to keep current.
+
+    Geo-Fencing's start-up script did this by hand (`cli run --publish`); a
+    fresh NexGen database would otherwise sit idle forever ("no finished run
+    to refresh"). On a fresh database the feed is empty or small, so this is
+    quick; the run's j_params record the settings it used, as every run's do.
+    """
+    from nexgen.shared.geoengine.pipeline import runner
+    if runner.published_run_id() is not None:
+        return
+    logger.info("no published geofence run: evaluating the whole feed as the first run")
+    out = runner.run(publish=True)
+    logger.info("first geofence run published: %s", {k: out.get(k) for k in ("i_run_id", "i_trips", "s_status")})
+
+
 def _detector_loop(stop: threading.Event) -> None:
     from nexgen.shared.geoengine.pipeline import scheduler
+    try:
+        _bootstrap_run()
+    except Exception:               # the loop still runs; the next start retries
+        logger.exception("could not create the first geofence run")
     every = float(get_config().setting("geofence", "refresh.every_minutes", 15.0) or 15.0)
     scheduler.loop(every_minutes=every, sync_fleet=False, stop=stop)
 
