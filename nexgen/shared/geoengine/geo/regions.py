@@ -38,9 +38,10 @@ from pathlib import Path
 
 import numpy as np
 
+from nexgen.core.config import ROOT
 from nexgen.shared.geoengine.geometry import points_in_ring
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+DATA_DIR = ROOT / "data"
 M_PER_DEG_LAT = 111_320.0
 
 

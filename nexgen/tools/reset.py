@@ -9,7 +9,7 @@ without -- each from its own source file, never from the legacy databases:
                      fence's inradius and state / district
     toll plazas      data/nh_fee_plazas.json
     plant fences     the published plant coordinates (circle geofences)
-    first run        an empty geofence run, published, for the refresh loop
+    (the first geofence run is created by the detector when trips arrive)
 
 Everything else -- trips, GPS, visits, analytics, ML training data, events,
 job history -- is gone, and comes back only from the sync lanes. With
@@ -129,9 +129,9 @@ def run_reset(start_from: datetime | None = None, masters_dir: Path | None = Non
             report["plant_fences"] = seed_from_plants(c)
         finally:
             c.close()
-        from nexgen.shared.geoengine.pipeline import runner
-        run = runner.run(publish=True)
-        report["first_geofence_run"] = {k: run.get(k) for k in ("i_run_id", "i_trips", "s_status")}
+        # The engine refuses a run over no trips: the geofence detector creates
+        # and publishes the first run when the sync lanes bring the first ones.
+        report["first_geofence_run"] = "created by the geofence detector when the first trips arrive"
 
     if start_from is not None:
         from nexgen.services.ingestion.tms.tta_api_sync import START_FROM_KEY

@@ -61,7 +61,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+from nexgen.core.config import ROOT  # noqa: E402 -- the repository root
+
 DATA_DIR = ROOT / "data"
 
 # An international-depiction file stops well short of the northern bound, so

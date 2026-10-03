@@ -39,18 +39,14 @@ def _dt(value: str | None):
     raise SystemExit(f"cannot parse date: {value!r} (use YYYY-MM-DD[ HH:MM:SS])")
 
 
-SCHEMA_FILES = ("schema_geofencing.sql", "schema_fleet.sql", "schema_pipeline.sql",
-                "schema_upload.sql", "schema_ops.sql", "schema_routing.sql")
-
-
 def cmd_init_db(args) -> int:
-    from nexgen.shared.geoengine.db import apply_schema, ensure_database
+    """In NexGen the geofence schema is migrated like every other one."""
+    from nexgen.core.db import ensure_databases
+    from nexgen.core.migrate import migrate
 
-    ensure_database()
-    applied = 0
-    for name in SCHEMA_FILES:
-        applied += len(apply_schema(Path(__file__).parent.parent / "migrations" / name))
-    print(f"database '{settings.geo_db_name}' ready; {applied} statements applied")
+    ensure_databases()
+    report = migrate(["geofence"])
+    print(f"geofence schema ready; {sum(1 for r in report if r['action'] == 'applied')} migration(s) applied")
     return 0
 
 

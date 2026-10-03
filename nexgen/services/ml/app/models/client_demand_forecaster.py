@@ -21,7 +21,7 @@ from sklearn.linear_model import Ridge
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+from nexgen.core.config import ROOT as PROJECT_ROOT  # noqa: E402
 CSV_PATH = PROJECT_ROOT / "data-analysis" / "data" / "tbl_trip_data20260128.csv"
 
 

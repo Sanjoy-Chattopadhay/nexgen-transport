@@ -14,9 +14,10 @@ import json
 from datetime import date
 from pathlib import Path
 
+from nexgen.core.config import ROOT
 from nexgen.shared.geoengine.db import geo_session
 
-DATA_FILE = Path(__file__).resolve().parent.parent.parent / "data" / "nh_fee_plazas.json"
+DATA_FILE = ROOT / "data" / "nh_fee_plazas.json"
 SOURCE = "ihmcl"
 
 
