@@ -135,25 +135,6 @@ services:
         # Fixes kept online; older months are archived to files, then dropped.
         retention_days: "${GPS_RETENTION_DAYS:-180}"
         archive_dir: archive
-      prefilter:
-        # Geo-Fencing's dedupe / resequence / teleport gate. Optional by
-        # decision (2026-10-03): off means every stored fix goes to the fit and
-        # the detector exactly as received. Every run records which it used.
-        enabled: true
-      fit:
-        # `fitted` = detection on fitted positions; `raw` = on the fixes as
-        # stored. Defaults measured on the 5.1M-fix corpus (docs/PIPELINE.md).
-        variant: "${FIT_VARIANT:-fitted}"
-        still_kmph: 5.0
-        window_fixes: 3
-        window_seconds: 900.0
-        still_spread_m: 25.0
-        spike_m: 100.0
-        spike_base_m: 30.0
-        spike_max_dt_s: 150.0
-        stop_min_seconds: 180.0
-        gap_min_seconds: 300.0
-        gap_moved_m: 300.0
 
   geofence:
     title: Geofencing
@@ -167,6 +148,30 @@ services:
       - /api/v1/geo/*
       - /api/v1/geofence/*
     settings:
+      # The stages between the stored fixes and the fence check. Every fix
+      # is stored whatever these say (the fleet service accepts everything);
+      # they decide what the detector looks at, and every run records them.
+      prefilter:
+        # Dedupe / resequence / teleport gate. Optional by decision
+        # (2026-10-03): off means the fit and the detector see every stored
+        # fix exactly as received. On (the measured default), rejected fixes
+        # are listed per run in geo_ping_reject with their reason -- flagged,
+        # never deleted.
+        enabled: true
+      fit:
+        # `fitted` = detection on fitted positions; `raw` = on the fixes as
+        # stored. Defaults measured on the 5.1M-fix corpus.
+        variant: "${FIT_VARIANT:-fitted}"
+        still_kmph: 5.0
+        window_fixes: 3
+        window_seconds: 900.0
+        still_spread_m: 25.0
+        spike_m: 100.0
+        spike_base_m: 30.0
+        spike_max_dt_s: 150.0
+        stop_min_seconds: 180.0
+        gap_min_seconds: 300.0
+        gap_moved_m: 300.0
       detector:
         hysteresis_m: "${GEO_HYSTERESIS_M:-25.0}"
         confirm_seconds: "${GEO_CONFIRM_SECONDS:-90.0}"

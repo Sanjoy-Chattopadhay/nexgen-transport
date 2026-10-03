@@ -128,7 +128,7 @@ def cmd_control(args) -> int:
 
 def cmd_import_legacy(args) -> int:
     from nexgen.core.logs import setup_logging
-    from nexgen.services.ingestion.legacy import run_import
+    from nexgen.tools.legacy_import import run_import
 
     setup_logging("import-legacy")
     report = run_import(parts=args.parts.split(",") if args.parts else None, limit_trips=args.limit_trips)

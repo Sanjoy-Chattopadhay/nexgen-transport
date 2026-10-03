@@ -222,6 +222,15 @@ class JobRunner:
         return out
 
 
+def recorded(service: str, job: str, trigger: str, fn: Callable[[], Any]) -> dict:
+    """Run `fn` under the job lock and record it in job_run, for code that
+    keeps its own scheduler (the TMS lanes, whose intervals are edited live
+    from the Ingestion page) but should still show on the developer page."""
+    runner = JobRunner(service)
+    runner.add(job, fn)
+    return runner.run(job, trigger)
+
+
 def recent_runs(service: str | None = None, job: str | None = None, limit: int = 100) -> list[dict]:
     sql = (f"SELECT i_run_id, s_service, s_job, s_trigger, dt_started, dt_finished, d_seconds, "
            f"s_status, j_summary, s_error FROM {_runs_table()}")

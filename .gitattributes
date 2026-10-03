@@ -1,0 +1,7 @@
+# Normalise line endings in the repository; Windows scripts keep CRLF.
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh text eol=lf
+# Built geometry layers: large, machine-written, never diffed by hand.
+data/*.json binary
