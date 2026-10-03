@@ -66,9 +66,17 @@ def cmd_run(args) -> int:
     logger.info("NexGen Transport gateway on http://%s:%s", cfg.host, cfg.gateway_port)
     try:
         server.run()
+    except KeyboardInterrupt:
+        # Ctrl+C. uvicorn has already shut the gateway down and re-raises the
+        # signal for the caller; stopping the services below is the answer.
+        pass
     finally:
+        import signal
+        # A second Ctrl+C must not abandon the services half-stopped.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         logger.info("stopping services")
         sup.shutdown()
+        logger.info("NexGen Transport stopped")
     return 0
 
 
