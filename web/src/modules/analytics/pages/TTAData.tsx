@@ -11,6 +11,7 @@ import SearchInput from '../components/ui/SearchInput';
 import Spinner from '../components/ui/Spinner';
 import Badge from '../components/ui/Badge';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import { useApi } from '../hooks/useApi';
 import { backendApi } from '../services/api';
 import { getTTAStatus, uploadTTAFile, createTTASchema } from '../services/tta';
@@ -89,6 +90,9 @@ export default function TTAData() {
   };
 
   const k = trips?.kpis;
+  // The proofs recount over the same filter the list uses; consignor and class ride on every call.
+  const proofParams = { search, status };
+  const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
 
   const columns = [
     { key: '_sel', label: '', render: (r: TTATripRow) => (
@@ -123,16 +127,26 @@ export default function TTAData() {
     <PageContainer>
       {/* KPI strip */}
       {k && (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
-          <KPICard label="Total Trips" value={formatNumber(k.total_trips)} icon={MapPin} color="blue" />
-          <KPICard label="Closed" value={formatNumber(k.closed_trips)} icon={CheckCircle} color="green" />
-          <KPICard label="Active" value={formatNumber(k.active_trips)} icon={Activity} color="amber" />
-          <KPICard label="On-Time %" value={formatPercent(k.ontime_pct)} icon={Target} color={k.ontime_pct >= 90 ? 'green' : k.ontime_pct >= 75 ? 'amber' : 'red'} />
-          <KPICard label="Avg Transit" value={formatDuration(k.avg_transit_min)} icon={Clock} color="purple" />
-          <KPICard label="Avg Detention" value={formatDuration(k.avg_detention_min)} icon={Timer} color="red" />
-          <KPICard label="Total Distance" value={formatDistance(k.total_distance_km != null ? Number(k.total_distance_km) : null)} icon={RouteIcon} color="cyan" />
-          <KPICard label="GPS Coverage" value={formatPercent(k.gps_coverage_pct)} icon={Satellite} color="blue" />
-        </div>
+        // Every tile opens to how it is calculated over exactly the trips the
+        // list below shows (same search, status, consignor and class).
+        <ProofGrid className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+          <KPICard label="Total Trips" value={formatNumber(k.total_trips)} icon={MapPin} color="blue"
+            proof={{ dataset: 'trips.total', params: proofParams, value: num(k.total_trips) }} />
+          <KPICard label="Closed" value={formatNumber(k.closed_trips)} icon={CheckCircle} color="green"
+            proof={{ dataset: 'trips.closed', params: proofParams, value: num(k.closed_trips) }} />
+          <KPICard label="Active" value={formatNumber(k.active_trips)} icon={Activity} color="amber"
+            proof={{ dataset: 'trips.active', params: proofParams, value: num(k.active_trips) }} />
+          <KPICard label="On-Time %" value={formatPercent(k.ontime_pct)} icon={Target} color={k.ontime_pct >= 90 ? 'green' : k.ontime_pct >= 75 ? 'amber' : 'red'}
+            proof={{ dataset: 'trips.ontime', params: proofParams, value: num(k.ontime_pct) }} />
+          <KPICard label="Avg Transit" value={formatDuration(k.avg_transit_min)} icon={Clock} color="purple"
+            proof={{ dataset: 'trips.transit', params: proofParams, value: num(k.avg_transit_min) }} />
+          <KPICard label="Avg Detention" value={formatDuration(k.avg_detention_min)} icon={Timer} color="red"
+            proof={{ dataset: 'trips.detention', params: proofParams, value: num(k.avg_detention_min) }} />
+          <KPICard label="Total Distance" value={formatDistance(k.total_distance_km != null ? Number(k.total_distance_km) : null)} icon={RouteIcon} color="cyan"
+            proof={{ dataset: 'trips.distance', params: proofParams, value: num(k.total_distance_km) }} />
+          <KPICard label="GPS Coverage" value={formatPercent(k.gps_coverage_pct)} icon={Satellite} color="blue"
+            proof={{ dataset: 'trips.gps', params: proofParams, value: num(k.gps_coverage_pct) }} />
+        </ProofGrid>
       )}
 
       {/* Upload card */}

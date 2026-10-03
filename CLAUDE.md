@@ -113,6 +113,15 @@ are threads that start/stop independently (`/internal/v1/roles/...`).
   expand → backfill → contract, never one destructive step.
 * A new write path that changes published figures must publish its event,
   so analytics recomputes and caches drop.
+* **Every calculated figure carries its proof** (the user's standing rule,
+  2026-10-04): the reader can open it and see what is counted (every filter
+  that applied and every one that did not), the arithmetic with the window's
+  own numbers, what was left out and why, the records themselves (paged and
+  CSV), and the figure recounted from those records beside the tile. Fleet
+  pages: a `proof` on KPICard inside a `ProofGrid` (web/src/core/proof),
+  backed by a dataset in nexgen/services/analytics/proof.py counted exactly
+  like its tile. Geofence pages: their drill datasets. A figure without a
+  proof is unfinished.
 * Web: navigation lives in `web/src/core/nav.ts` — a new page joins a
   section (as a tab) rather than adding a sidebar entry. The geofence
   module's pages are under `/geo/...` and its API under `/api/v1/geo/...`.

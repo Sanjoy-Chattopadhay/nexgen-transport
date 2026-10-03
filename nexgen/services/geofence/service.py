@@ -44,7 +44,8 @@ def _bootstrap_run() -> bool:
         return False
     logger.info("no published geofence run: evaluating the whole feed as the first run")
     out = runner.run(publish=True)
-    logger.info("first geofence run published: %s", {k: out.get(k) for k in ("i_run_id", "i_trips", "s_status")})
+    logger.info("first geofence run published: run %s over %s trips (%s s)", out.get("run_id"), out.get("trips"),
+                out.get("seconds"))
     return True
 
 

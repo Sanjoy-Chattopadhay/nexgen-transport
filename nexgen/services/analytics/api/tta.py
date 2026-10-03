@@ -90,6 +90,34 @@ def trip_class_counts(scope: ConsignorScope = Depends(consignor_scope), conn=Dep
     return {"classes": classes, "total": sum(c["trips"] for c in classes)}
 
 
+def trips_list_where(scope: ConsignorScope, tclass: TripClassScope, search: str = "",
+                     status: str = "") -> tuple[str, list]:
+    """The Trips page's filter: consignor, zonal / local, search box, status.
+
+    One function for the list, its headline tiles and their proofs
+    (analytics/proof.py), so all three always describe the same trips.
+    """
+    clauses, params = [], []
+    cnr_clause, cnr_params = base_clause(scope, "i_cnr_id", alias="t")
+    if cnr_clause:
+        clauses.append(cnr_clause)
+        params += cnr_params
+    cls_clause, cls_params = class_clause(tclass, alias="t")
+    if cls_clause:
+        clauses.append(cls_clause)
+        params += cls_params
+    if search:
+        clauses.append("""(CAST(t.i_trip_no AS CHAR) LIKE %s OR t.s_asset_id LIKE %s
+                   OR t.s_cnr_name LIKE %s OR t.s_org_node_name LIKE %s
+                   OR t.s_dest_node_name LIKE %s OR t.s_driver_name LIKE %s)""")
+        like = f"%{search}%"
+        params += [like] * 6
+    if status:
+        clauses.append("t.c_trip_status = %s")
+        params.append(status)
+    return (("WHERE " + " AND ".join(clauses)) if clauses else ""), params
+
+
 @router.get("/trips")
 def list_tta_trips(
     page: int = 1,
@@ -109,25 +137,9 @@ def list_tta_trips(
     page_size = min(max(page_size, 1), 200)
     offset = (page - 1) * page_size
 
-    clauses, params = [], []
+    where, params = trips_list_where(scope, tclass, search, status)
     cnr_clause, cnr_params = base_clause(scope, "i_cnr_id", alias="t")
-    if cnr_clause:
-        clauses.append(cnr_clause)
-        params += cnr_params
     cls_clause, cls_params = class_clause(tclass, alias="t")
-    if cls_clause:
-        clauses.append(cls_clause)
-        params += cls_params
-    if search:
-        clauses.append("""(CAST(t.i_trip_no AS CHAR) LIKE %s OR t.s_asset_id LIKE %s
-                   OR t.s_cnr_name LIKE %s OR t.s_org_node_name LIKE %s
-                   OR t.s_dest_node_name LIKE %s OR t.s_driver_name LIKE %s)""")
-        like = f"%{search}%"
-        params += [like] * 6
-    if status:
-        clauses.append("t.c_trip_status = %s")
-        params.append(status)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     with conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total FROM tta_trips t {where}", params)
@@ -135,9 +147,10 @@ def list_tta_trips(
 
         # headline KPIs over the filtered set
         cur.execute(
+            # COALESCE: a count over no trips is 0, not blank (the proof recounts 0).
             f"""SELECT COUNT(*) AS total_trips,
-                       SUM(LOWER(t.c_trip_status) LIKE '%%close%%') AS closed_trips,
-                       SUM(LOWER(COALESCE(t.c_trip_status, '')) NOT LIKE '%%close%%') AS active_trips,
+                       COALESCE(SUM(LOWER(t.c_trip_status) LIKE '%%close%%'), 0) AS closed_trips,
+                       COALESCE(SUM(LOWER(COALESCE(t.c_trip_status, '')) NOT LIKE '%%close%%'), 0) AS active_trips,
                        ROUND(100 * SUM(m.i_delivery_delta_min <= 0) / NULLIF(SUM(m.i_delivery_delta_min IS NOT NULL), 0), 1) AS ontime_pct,
                        ROUND(AVG(m.i_transit_time_min), 0) AS avg_transit_min,
                        ROUND(SUM(m.d_distance_travelled_km), 1) AS total_distance_km,
