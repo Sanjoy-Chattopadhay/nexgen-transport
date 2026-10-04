@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Clock, Timer, TrendingUp, Search, MapPin } from 'lucide-react';
 import KPICard from '../ui/KPICard';
+import { ProofGrid } from '../../../../core/proof/ProofPanel';
 import Spinner from '../ui/Spinner';
 import GeofenceMap from './GeofenceMap';
 import type { FenceShape } from './GeofenceMap';
@@ -109,16 +110,20 @@ function TripDetail({ track }: { track: TripTrack }) {
 
   return (
     <>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <ProofGrid className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <KPICard label="Declared by the TMS" color="blue" icon={Clock}
-          value={h(detention.declared_h)} />
+          value={h(detention.declared_h)}
+          proof={{ dataset: 'tripproof.hold', params: { trip_no: trip.trip_no, metric: 'declared' }, value: detention.declared_h }} />
         <KPICard label="Hidden after gate-out" color="red" icon={Timer}
-          value={h(detention.hidden_tail_h)} />
+          value={h(detention.hidden_tail_h)}
+          proof={{ dataset: 'tripproof.hold', params: { trip_no: trip.trip_no, metric: 'hidden' }, value: detention.hidden_tail_h }} />
         <KPICard label="True total hold" color="purple" icon={Clock}
-          value={h(detention.true_total_h)} />
+          value={h(detention.true_total_h)}
+          proof={{ dataset: 'tripproof.hold', params: { trip_no: trip.trip_no, metric: 'total' }, value: detention.true_total_h }} />
         <KPICard label="Understated by" color="amber" icon={TrendingUp}
-          value={detention.understated_by_pct == null ? '—' : `${detention.understated_by_pct}%`} />
-      </div>
+          value={detention.understated_by_pct == null ? '—' : `${detention.understated_by_pct}%`}
+          proof={{ dataset: 'tripproof.hold', params: { trip_no: trip.trip_no, metric: 'understated' }, value: detention.understated_by_pct }} />
+      </ProofGrid>
 
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-6">
         <div className="flex items-start justify-between flex-wrap gap-3 mb-4">

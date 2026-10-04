@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import DataTable from '../components/ui/DataTable';
 import Spinner from '../components/ui/Spinner';
 import { useApi } from '../hooks/useApi';
@@ -66,16 +67,20 @@ function DetentionTab({ tripClass }: { tripClass: TripClass }) {
 
   return (
     <>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <ProofGrid className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <KPICard label="Declared detention (median)" color="blue" icon={Clock}
-          value={h(sum.declared_works_detention_h.median)} />
+          value={h(sum.declared_works_detention_h.median)}
+          proof={{ dataset: 'detention.declared', params: { trip_class: tripClass }, value: sum.declared_works_detention_h.median }} />
         <KPICard label="Hidden tail after gate-out" color="amber" icon={Timer}
-          value={h(sum.hidden_tail_h.median)} />
+          value={h(sum.hidden_tail_h.median)}
+          proof={{ dataset: 'detention.tail', params: { trip_class: tripClass }, value: sum.hidden_tail_h.median }} />
         <KPICard label="True total (median)" color="purple" icon={Clock}
-          value={h(sum.true_total_detention_h.median)} />
+          value={h(sum.true_total_detention_h.median)}
+          proof={{ dataset: 'detention.total', params: { trip_class: tripClass }, value: sum.true_total_detention_h.median }} />
         <KPICard label="Trips with 4h+ hidden tail" color="red" icon={AlertTriangle}
-          value={formatNumber(sum.tail_over_4h)} />
-      </div>
+          value={formatNumber(sum.tail_over_4h)}
+          proof={{ dataset: 'detention.tail4h', params: { trip_class: tripClass }, value: sum.tail_over_4h }} />
+      </ProofGrid>
 
       <SectionCard
         title="The three detention windows"
@@ -163,16 +168,21 @@ function GpsTab({ tripClass }: { tripClass: TripClass }) {
 
   return (
     <>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-        <KPICard label="GPS healthy" color="green" icon={Satellite} value={pct(sum.gps_ok_pct)} />
+      <ProofGrid className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <KPICard label="GPS healthy" color="green" icon={Satellite} value={pct(sum.gps_ok_pct)}
+          proof={{ dataset: 'gpsperf.ok', params: { trip_class: tripClass }, value: sum.gps_ok_pct }} />
         <KPICard label="Silent (no data received)" color="red" icon={SatelliteDish}
-          value={formatNumber(sum.silent_trips)} />
+          value={formatNumber(sum.silent_trips)}
+          proof={{ dataset: 'gpsperf.silent', params: { trip_class: tripClass }, value: sum.silent_trips }} />
         <KPICard label="Died at origin" color="amber" icon={AlertTriangle}
-          value={formatNumber(sum.died_at_origin)} />
-        <KPICard label="GPS on time" color="blue" icon={Clock} value={pct(sum.gps_on_time_pct)} />
+          value={formatNumber(sum.died_at_origin)}
+          proof={{ dataset: 'gpsperf.died', params: { trip_class: tripClass }, value: sum.died_at_origin }} />
+        <KPICard label="GPS on time" color="blue" icon={Clock} value={pct(sum.gps_on_time_pct)}
+          proof={{ dataset: 'gpsperf.ontime', params: { trip_class: tripClass }, value: sum.gps_on_time_pct }} />
         <KPICard label="Median pings / trip" color="purple" icon={Satellite}
-          value={formatNumber(sum.median_ping_count)} />
-      </div>
+          value={formatNumber(sum.median_ping_count)}
+          proof={{ dataset: 'gpsperf.pings', params: { trip_class: tripClass }, value: sum.median_ping_count }} />
+      </ProofGrid>
 
       <SectionCard
         title="What each failure mode means"
@@ -246,16 +256,20 @@ function DestinationTab({ tripClass }: { tripClass: TripClass }) {
 
   return (
     <>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <ProofGrid className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <KPICard label="Lanes stopping short" color="red" icon={RouteIcon}
-          value={formatNumber(conclusive.length)} />
+          value={formatNumber(conclusive.length)}
+          proof={{ dataset: 'coverage.short', params: { trip_class: tripClass }, value: conclusive.length }} />
         <KPICard label="Destinations needing a geofence" color="amber" icon={MapPinOff}
-          value={ungValue(ung?.destinations_needing_a_geofence)} />
+          value={ungValue(ung?.destinations_needing_a_geofence)}
+          proof={{ dataset: 'coverage.need', params: { trip_class: tripClass }, value: ung?.destinations_needing_a_geofence ?? null }} />
         <KPICard label="Trips affected" color="purple" icon={Building2}
-          value={ungValue(ung?.trips_affected)} />
+          value={ungValue(ung?.trips_affected)}
+          proof={{ dataset: 'coverage.affected', params: { trip_class: tripClass }, value: ung?.trips_affected ?? null }} />
         <KPICard label="Lanes checked" color="blue" icon={Globe}
-          value={formatNumber((gaps || []).length)} />
-      </div>
+          value={formatNumber((gaps || []).length)}
+          proof={{ dataset: 'coverage.checked', params: { trip_class: tripClass }, value: (gaps || []).length }} />
+      </ProofGrid>
 
       {uError && (
         <div className="mb-6 rounded-lg border border-red-900/50 bg-red-950/20 p-3">

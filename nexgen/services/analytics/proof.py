@@ -757,6 +757,416 @@ for _k in ("trips", "otd", "transit", "detention", "km", "violations", "transpor
 
 
 # ---------------------------------------------------------------------------
+# Vehicle / driver / route pages: their precomputed summaries
+# (lib/data_migration.py refresh_summaries_incremental)
+# ---------------------------------------------------------------------------
+# The tiles read vehicle_summary / driver_summary / route_summary, which the
+# kpi worker rebuilds whenever one of the entity's trips changes. The proof
+# recomputes the figure from the trips now, with the summaries' own rule
+# (_INCR_BASE_WHERE, imported so the two cannot drift), and lists those trips
+# and the ones the rule leaves out. A tile that disagrees is a stale summary.
+
+_ENTITY = {
+    # kind: (trip-key condition, params from the request, summary table and key, label)
+    "vehicle": ("t.vehicle_id = %s", ("id",), "vehicle_summary", "vehicle_id = %s", "this vehicle"),
+    "driver": ("t.driver_id = %s", ("id",), "driver_summary", "driver_id = %s", "this driver"),
+    "route": ("lo.name = %s AND ld.name = %s", ("origin", "destination"), "route_summary",
+              "origin = %s AND destination = %s", "this route"),
+}
+
+_SUMMARY_METRICS = {
+    # metric: (title, format, SQL over trips t, summary column, what it is)
+    "trips": ("Total trips", "int", "COUNT(*)", None, "Each counted trip once."),
+    "drivers": ("Drivers used", "int", "COUNT(DISTINCT t.driver_id)", "drivers_used",
+                "The different drivers on those trips, each counted once."),
+    "speed": ("Average speed", "kmh", "ROUND(AVG(t.avg_speed_kmph), 2)", "avg_speed_kmph",
+              "The mean of each trip's own average speed (every trip weighs the same)."),
+    "eta": ("ETA rate", "pct", "ROUND(SUM(CASE WHEN t.eta_met = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(t.eta_met), 0) * 100, 2)",
+            "eta_success_rate", "Of those trips with an ETA verdict, the share that met it."),
+    "delay": ("Average delay", "min", "ROUND(AVG(t.eta_delay_minutes), 2)", "avg_eta_delay_min",
+              "The mean of each trip's delay against its ETA, in minutes (early trips count as negative)."),
+    "duration": ("Average duration", "min", "ROUND(AVG(t.trip_duration_minutes), 2)", "avg_duration_min",
+                 "The mean of each trip's duration, in minutes."),
+    "distance": ("Average distance", "km", "ROUND(AVG(t.trip_km), 2)", "avg_distance_km",
+                 "The mean of each trip's distance (trip_km)."),
+}
+
+_ENT_JOIN = """
+      FROM trips t
+      LEFT JOIN locations lo  ON lo.id = t.origin_id
+      LEFT JOIN locations ld  ON ld.id = t.destination_id
+      LEFT JOIN drivers dr    ON dr.id = t.driver_id
+      LEFT JOIN vehicles v    ON v.id = t.vehicle_id
+"""
+_ENT_SELECT = """
+    SELECT t.dispatch_entry_no AS trip_no, t.trip_start, lo.name AS origin, ld.name AS destination,
+           dr.name AS driver, v.asset_id AS vehicle, t.trip_duration_minutes AS duration_min, t.trip_km,
+           t.avg_speed_kmph, t.eta_met, t.eta_delay_minutes AS delay_min, t.eta_data_status
+"""
+_ENT_COLUMNS = [
+    {"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+    {"key": "trip_start", "label": "Departed", "kind": "datetime"},
+    {"key": "origin", "label": "From"},
+    {"key": "destination", "label": "To"},
+    {"key": "driver", "label": "Driver"},
+    {"key": "vehicle", "label": "Vehicle"},
+    {"key": "duration_min", "label": "Duration min", "kind": "number"},
+    {"key": "trip_km", "label": "Km", "kind": "number", "digits": 1},
+    {"key": "avg_speed_kmph", "label": "Avg km/h", "kind": "number", "digits": 1},
+    {"key": "eta_met", "label": "ETA met", "kind": "bool"},
+    {"key": "delay_min", "label": "Delay min", "kind": "number"},
+]
+_ENT_SORT = {"trip_start": "trip_start", "trip_no": "trip_no", "duration_min": "duration_min",
+             "trip_km": "trip_km", "avg_speed_kmph": "avg_speed_kmph", "delay_min": "delay_min"}
+
+
+def _summary_metric(ctx: Ctx, kind: str, metric: str) -> dict:
+    from nexgen.services.analytics.lib.data_migration import _INCR_BASE_WHERE as RULE
+    key_sql, key_params, table, table_key, who = _ENTITY[kind]
+    try:
+        kp = [int(ctx.extra[k]) if k == "id" else ctx.extra[k] for k in key_params]
+    except (KeyError, ValueError):
+        raise HTTPException(400, f"{' and '.join(key_params)} required")
+    title, fmt, expr, col, what = _SUMMARY_METRICS[metric]
+    scope_sql, scope_params = (" AND t.cnr_id = %s", [ctx.scope.id]) if ctx.scope.active else ("", [])
+    entity = f"WHERE {key_sql}{scope_sql}"
+    counted = f"{entity} AND {RULE}"
+    params = kp + scope_params
+    value = _scalar(ctx, f"SELECT {expr} {_ENT_JOIN} {counted}", params)
+    n = int(_scalar(ctx, f"SELECT COUNT(*) {_ENT_JOIN} {counted}", params) or 0)
+    everything = int(_scalar(ctx, f"SELECT COUNT(*) {_ENT_JOIN} {entity}", params) or 0)
+    with ctx.conn.cursor() as cur:
+        cur.execute(f"SELECT {col or 'total_trips' if kind != 'route' else col or 'trip_count'} AS v "
+                    f"FROM {table} WHERE {table_key} AND cnr_id = %s", kp + [ctx.scope.summary_id])
+        stored_row = cur.fetchone()
+        cur.execute(f"""SELECT CASE WHEN IFNULL(t.eta_data_status, '') <> 'available'
+                                    THEN CONCAT('ETA data ', IFNULL(t.eta_data_status, 'missing'))
+                                    ELSE 'no positive duration' END AS why, COUNT(*) AS n
+                          {_ENT_JOIN} {entity} AND NOT ({RULE}) GROUP BY why ORDER BY n DESC""", params)
+        why = cur.fetchall()
+    stored = _plain(stored_row["v"]) if stored_row else None
+    rows, total = _page(ctx, f"{_ENT_SELECT} {_ENT_JOIN} {counted}", params, _ENT_SORT, "trip_start")
+    extra = []
+    if metric == "eta":
+        met = int(_scalar(ctx, f"SELECT COUNT(*) {_ENT_JOIN} {counted} AND t.eta_met = 1", params) or 0)
+        judged = int(_scalar(ctx, f"SELECT COUNT(t.eta_met) {_ENT_JOIN} {counted}", params) or 0)
+        formula = (f"{_fmt(met)} met ÷ {_fmt(judged)} judged × 100 = {_fmt(value, 2)}%"
+                   if judged else "no counted trip has an ETA verdict")
+    elif metric in ("trips", "drivers"):
+        formula = f"{expr.replace('t.', '')} over {_fmt(n)} counted trips = {_fmt(value)}"
+    else:
+        formula = (f"{expr.replace('t.', '').replace('ROUND(', '').replace(', 2)', '')} over {_fmt(n)} counted trips "
+                   f"= {_fmt(value, 2)}" if n else "no counted trips")
+    return {"title": title, "format": fmt, "value": value,
+            "method": [f"{what}",
+                       f"Counted: the trips of {who} whose ETA data is available and whose duration is above "
+                       f"zero — the rule the page's summary is built with. {_fmt(n)} of its "
+                       f"{_fmt(everything)} trips qualify.",
+                       *ctx.scope_lines(False),
+                       ("The tile reads the precomputed summary"
+                        + (f" (stored value: {stored})." if stored is not None else ", which has no row yet.")
+                        + " It is rebuilt whenever one of these trips changes; this dropdown recounts from the "
+                          "trips now."), *extra],
+            "formula": formula,
+            "excluded": [{"label": f"Trips of {who} left out — {w['why']}", "count": int(w["n"])} for w in why],
+            "differs_note": "The tile reads the stored summary; if it differs from the recount, the summary is "
+                            "stale and is rebuilt on the next change to these trips.",
+            "columns": _ENT_COLUMNS, "rows": rows, "total": total}
+
+
+for _kind, _metrics in (("vehicle", ("trips", "drivers", "speed", "eta")),
+                        ("driver", ("trips", "eta", "speed", "delay")),
+                        ("route", ("trips", "duration", "eta", "distance"))):
+    for _m in _metrics:
+        DATASETS[f"{_kind}.{_m}"] = (lambda k, m: (lambda ctx: _summary_metric(ctx, k, m)))(_kind, _m)
+
+
+# ---------------------------------------------------------------------------
+# Detention & delivery proof page (Smart-Truck's circle geofencing:
+# shared/circlefence/detention.py and gps_quality.py)
+# ---------------------------------------------------------------------------
+# These endpoints are fleet-wide (no consignor filter) and default to the
+# zonal class, so the proofs do the same. Each calls the very function the
+# tile's endpoint calls and lists the per-trip inputs it judged.
+
+def _circle_class(ctx: Ctx) -> str | None:
+    v = ctx.trip_class if ctx.trip_class is not None else "zonal"
+    return None if v in ("", "all") else v
+
+
+def _class_line(tc: str | None) -> str:
+    return (f"Trip class: {tc} (this page's own toggle)." if tc else "Trip class: all.") + \
+        " This page is fleet-wide: the consignor filter does not apply to it."
+
+
+def _median_note(values: list, pick) -> str:
+    n = len(values)
+    if not n:
+        return "no values"
+    i = min(n - 1, int(n * 0.5))
+    return (f"the {n} values sorted ascending; position ⌊{n} × 0.5⌋ = {i} (counting from 0) "
+            f"is {pick}" + (" — for an even count the upper of the two middle values, not their average"
+                            if n % 2 == 0 else ""))
+
+
+_DET_COLS = [
+    {"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+    {"key": "transporter", "label": "Transporter"},
+    {"key": "destination", "label": "To"},
+    {"key": "declared_h", "label": "Declared h", "kind": "number", "digits": 2},
+    {"key": "tail_h", "label": "Hidden tail h", "kind": "number", "digits": 2},
+    {"key": "total_h", "label": "True total h", "kind": "number", "digits": 2},
+    {"key": "gap_min", "label": "Exit gap min", "kind": "number"},
+    {"key": "rank", "label": "Rank", "kind": "number"},
+]
+
+
+def _list_page(ctx: Ctx, rows: list[dict], default: str) -> tuple[list[dict], int]:
+    key = ctx.sort or default
+    rows = sorted(rows, key=lambda r: (r.get(key) is None, r.get(key)), reverse=(ctx.order == "desc"))
+    if ctx.extra.get("csv"):
+        return rows, len(rows)
+    return rows[(ctx.page - 1) * ctx.page_size: ctx.page * ctx.page_size], len(rows)
+
+
+def _detention(ctx: Ctx, metric: str) -> dict:
+    from nexgen.shared.circlefence import detention as det
+    tc = _circle_class(ctx)
+    rows = det._fetch(ctx.conn, tc, None)
+    wide = [r for r in rows if (r["i_geofence_out_gap_min"] or 0) > det.MAX_TRUSTED_GAP_MIN]
+    trusted = [r for r in rows if (r["i_geofence_out_gap_min"] or 0) <= det.MAX_TRUSTED_GAP_MIN]
+    negative = [r for r in trusted if (r["tail_min"] or 0) < 0]
+    clean = [r for r in trusted if (r["tail_min"] or 0) >= 0]
+    field = {"declared": "declared_min", "tail": "tail_min", "total": "total_min", "tail4h": "tail_min"}[metric]
+    have = [r for r in clean if r[field] is not None]
+    values = [r[field] / 60.0 for r in have]
+    order = sorted(range(len(have)), key=lambda i: values[i])
+    rank = {i: k for k, i in enumerate(order)}
+    out_rows = [{"trip_no": r["i_trip_no"], "transporter": r["s_trans_name"], "destination": r["s_dest_node_name"],
+                 "declared_h": None if r["declared_min"] is None else round(r["declared_min"] / 60.0, 2),
+                 "tail_h": None if r["tail_min"] is None else round(r["tail_min"] / 60.0, 2),
+                 "total_h": None if r["total_min"] is None else round(r["total_min"] / 60.0, 2),
+                 "gap_min": r["i_geofence_out_gap_min"], "rank": rank[i]} for i, r in enumerate(have)]
+    excluded = []
+    if wide:
+        excluded.append({"label": f"Exit time uncertain by more than {det.MAX_TRUSTED_GAP_MIN} min (GPS gap at the "
+                                  "crossing)", "count": len(wide)})
+    if negative:
+        excluded.append({"label": "Cleared the fence before its own gate-out stamp (a late stamp, not detention)",
+                         "count": len(negative)})
+    lines = ["Trips with a confirmed exit from the origin geofence and a booking time.",
+             "Declared = booking → trip start (the gate-out stamp); hidden tail = trip start → the "
+             "GPS-confirmed geofence exit; true total = booking → exit.", _class_line(tc)]
+    if metric == "tail4h":
+        over = [r for r in out_rows if r["tail_h"] is not None and r["tail_h"] > 4]
+        page, total = _list_page(ctx, over, "tail_h")
+        return {"title": "Trips with 4h+ hidden tail", "format": "int", "value": sum(1 for v in values if v > 4),
+                "method": ["The trips whose hidden tail (trip start → GPS exit) is longer than 4 hours.", *lines],
+                "formula": f"COUNT(hidden tail > 4 h) over {_fmt(len(values))} trips = {_fmt(len(over))}",
+                "excluded": excluded, "columns": _DET_COLS, "rows": page, "total": total}
+    value = det._pct(values, 50)
+    title = {"declared": "Declared detention (median)", "tail": "Hidden tail after gate-out (median)",
+             "total": "True total (median)"}[metric]
+    key = {"declared": "declared_h", "tail": "tail_h", "total": "total_h"}[metric]
+    if ctx.sort is None:
+        ctx.sort, ctx.order = "rank", "asc"
+    page, total = _list_page(ctx, out_rows, "rank")
+    return {"title": title, "format": "hours", "value": value,
+            "method": ["The median, not the mean: detention is heavily right-skewed and a few multi-day holds "
+                       "would otherwise set the typical figure.", *lines],
+            "formula": f"median = {_median_note(values, f'{_fmt(value, 2)} h' if value is not None else '')}",
+            "excluded": excluded, "columns": _DET_COLS, "rows": page, "total": total}
+
+
+for _m in ("declared", "tail", "total", "tail4h"):
+    DATASETS[f"detention.{_m}"] = (lambda m: (lambda ctx: _detention(ctx, m)))(_m)
+
+
+_GPS_COLS = [
+    {"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+    {"key": "transporter", "label": "Transporter"},
+    {"key": "verdict", "label": "Verdict"},
+    {"key": "pings", "label": "Pings", "kind": "number"},
+    {"key": "trip_start", "label": "Trip start", "kind": "datetime"},
+    {"key": "first_ping", "label": "First ping", "kind": "datetime"},
+    {"key": "lag_min", "label": "Lag min", "kind": "number"},
+    {"key": "uptime_pct", "label": "Uptime %", "kind": "number", "digits": 1},
+]
+
+
+def _gps(ctx: Ctx, metric: str) -> dict:
+    from nexgen.shared.circlefence import gps_quality as gq
+    tc = _circle_class(ctx)
+    raw = gq._coverage_rows(ctx.conn, tc)
+    rows = []
+    for r in raw:
+        lag = ((r["first_ping"] - r["dt_trip_start"]).total_seconds() / 60.0
+               if r["dt_trip_start"] and r["first_ping"] else None)
+        rows.append({"trip_no": r["i_trip_no"], "transporter": r["s_trans_name"], "verdict": gq._classify(r),
+                     "pings": r["i_gps_ping_count"] or 0, "trip_start": _plain(r["dt_trip_start"]),
+                     "first_ping": _plain(r["first_ping"]), "lag_min": None if lag is None else round(lag),
+                     "uptime_pct": _plain(r["d_uptime_pct"])})
+    n = len(rows)
+    rules = ["Each trip gets one verdict, the first that applies: silent (no ping at all) → died at origin "
+             "(tracker stopped inside the origin fence) → late start (first ping more than "
+             f"{gq.ON_TIME_LAG_MIN} min after trip start) → gappy (uptime under 80%) → healthy.",
+             _class_line(tc)]
+    counts = {v: sum(1 for r in rows if r["verdict"] == v) for v in ("ok", "silent", "died_at_origin")}
+    if metric in ("ok", "silent", "died"):
+        verdict = {"ok": "ok", "silent": "silent", "died": "died_at_origin"}[metric]
+        sel = [r for r in rows if r["verdict"] == verdict]
+        page, total = _list_page(ctx, sel, "trip_start")
+        if metric == "ok":
+            value = gq._rate(counts["ok"], n)
+            return {"title": "GPS healthy", "format": "pct", "value": value, "method": rules,
+                    "formula": (f"{_fmt(counts['ok'])} healthy ÷ {_fmt(n)} trips × 100 = {_fmt(value, 1)}%"
+                                if n else "no trips"),
+                    "excluded": [], "columns": _GPS_COLS, "rows": page, "total": total}
+        title = "Silent (no data received)" if metric == "silent" else "Died at origin"
+        return {"title": title, "format": "int", "value": len(sel), "method": rules,
+                "formula": f"COUNT(verdict = {verdict}) over {_fmt(n)} trips = {_fmt(len(sel))}",
+                "excluded": [], "columns": _GPS_COLS, "rows": page, "total": total}
+    if metric == "ontime":
+        timed = [r for r in rows if r["lag_min"] is not None]
+        on = sum(1 for r in rows if r["trip_start"] and r["first_ping"] and
+                 (datetime.fromisoformat(r["first_ping"]) - datetime.fromisoformat(r["trip_start"])).total_seconds()
+                 / 60.0 <= gq.ON_TIME_LAG_MIN)
+        value = gq._rate(on, len(timed))
+        page, total = _list_page(ctx, timed, "lag_min")
+        return {"title": "GPS on time", "format": "pct", "value": value,
+                "method": [f"Of the trips with both a trip start and a first ping, the share whose first ping came "
+                           f"no more than {gq.ON_TIME_LAG_MIN} min after the trip started.", _class_line(tc)],
+                "formula": (f"{_fmt(on)} on time ÷ {_fmt(len(timed))} trips × 100 = {_fmt(value, 1)}%"
+                            if timed else "no trip has both times"),
+                "excluded": ([{"label": "Trips without a trip start or without any ping (cannot be timed)",
+                               "count": n - len(timed)}] if n - len(timed) else []),
+                "columns": _GPS_COLS, "rows": page, "total": total}
+    # median pings per trip
+    vals = sorted(r["pings"] for r in rows)
+    value = vals[n // 2] if n else None
+    if ctx.sort is None:
+        ctx.sort, ctx.order = "pings", "asc"
+    page, total = _list_page(ctx, rows, "pings")
+    return {"title": "Median pings / trip", "format": "int", "value": value,
+            "method": ["The middle of the trips' GPS ping counts (a trip with no ping counts as 0).", _class_line(tc)],
+            "formula": (f"the {n} counts sorted ascending; position ⌊{n} ÷ 2⌋ = {n // 2} (counting from 0) "
+                        f"is {_fmt(value)}" if n else "no trips"),
+            "excluded": [], "columns": _GPS_COLS, "rows": page, "total": total}
+
+
+for _m in ("ok", "silent", "died", "ontime", "pings"):
+    DATASETS[f"gpsperf.{_m}"] = (lambda m: (lambda ctx: _gps(ctx, m)))(_m)
+
+
+def _coverage(ctx: Ctx, metric: str) -> dict:
+    from nexgen.shared.circlefence import gps_quality as gq
+    tc = _circle_class(ctx)
+    if metric in ("short", "checked"):
+        lanes = gq.route_end_gap(tc, 5, ctx.conn)
+        rows = [{"destination": l["destination"], "trips": l["trips"], "median_gap_km": l["median_end_gap_km"],
+                 "fence": l["fence_source"], "conclusive": 1 if l["gap_is_conclusive"] else 0,
+                 "counted": 1 if (l["gap_is_conclusive"] and l["median_end_gap_km"] > 25) else 0} for l in lanes]
+        cols = [{"key": "destination", "label": "Destination"}, {"key": "trips", "label": "Trips", "kind": "number"},
+                {"key": "median_gap_km", "label": "Median end gap km", "kind": "number", "digits": 1},
+                {"key": "fence", "label": "Fence from"}, {"key": "conclusive", "label": "Conclusive", "kind": "bool"},
+                {"key": "counted", "label": "Stops short", "kind": "bool"}]
+        how = ["A lane is one destination with at least 5 trips; its end gap is how far from the destination's "
+               "fence each trip's last GPS fix was, and the median of those.",
+               "Conclusive unless the fence is a gazetteer town centre and the median is 100 km or less "
+               "(then the delivery point is not precisely known).", _class_line(tc)]
+        if metric == "short":
+            sel = [r for r in rows if r["counted"]]
+            page, total = _list_page(ctx, sel, "median_gap_km")
+            return {"title": "Lanes stopping short", "format": "int", "value": len(sel),
+                    "method": ["Lanes whose trails conclusively end more than 25 km short of the destination.", *how],
+                    "formula": f"COUNT(conclusive AND median end gap > 25 km) over {_fmt(len(rows))} lanes = {_fmt(len(sel))}",
+                    "excluded": [], "columns": cols, "rows": page, "total": total}
+        page, total = _list_page(ctx, rows, "median_gap_km")
+        return {"title": "Lanes checked", "format": "int", "value": len(rows), "method": how,
+                "formula": f"COUNT(lanes with ≥ 5 trips and a destination fence) = {_fmt(len(rows))}",
+                "excluded": [], "columns": cols, "rows": page, "total": total}
+    u = gq.ungeofenced_destinations(tc, ctx.conn)
+    rows = [{"destination": f["destination"], "lane_trips": f["trips_on_lane"],
+             "affected": f["trips_ran_full_route_no_geofence_close"], "median_km": f["median_lane_distance_km"],
+             "close_reasons": ", ".join(f["close_reasons"])} for f in u["findings"]]
+    cols = [{"key": "destination", "label": "Destination"}, {"key": "lane_trips", "label": "Trips on lane", "kind": "number"},
+            {"key": "affected", "label": "Ran full route, closed without a geofence", "kind": "number"},
+            {"key": "median_km", "label": "Lane median km", "kind": "number", "digits": 1},
+            {"key": "close_reasons", "label": "Close reasons"}]
+    how = [f"A destination qualifies when no upstream geofence is recorded on its lane, it has at least "
+           f"{gq.MIN_LANE_TRIPS} trips with a distance, and trips ran at least {int(gq.DISTANCE_OK_FRACTION * 100)}% "
+           "of the lane's median distance with GPS yet closed for a reason other than a geofence hit.", _class_line(tc)]
+    page, total = _list_page(ctx, rows, "affected")
+    if metric == "need":
+        return {"title": "Destinations needing a geofence", "format": "int", "value": u["destinations_needing_a_geofence"],
+                "method": how, "formula": f"COUNT(qualifying destinations) = {_fmt(len(rows))}",
+                "excluded": [], "columns": cols, "rows": page, "total": total}
+    return {"title": "Trips affected", "format": "int", "value": u["trips_affected"], "method": how,
+            "formula": (" + ".join(_fmt(r["affected"]) for r in rows[:12]) + (" + …" if len(rows) > 12 else "")
+                        + f" = {_fmt(u['trips_affected'])}") if rows else "no destination qualifies",
+            "excluded": [], "columns": cols, "rows": page, "total": total}
+
+
+for _m in ("short", "checked", "need", "affected"):
+    DATASETS[f"coverage.{_m}"] = (lambda m: (lambda ctx: _coverage(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
+# Detention page > Trip on the map: one trip's three windows
+# (shared/circlefence/track.py trip_track)
+# ---------------------------------------------------------------------------
+
+@dataset("tripproof.hold")
+def _trip_hold(ctx: Ctx) -> dict:
+    from nexgen.shared.circlefence.track import _hours
+    trip_no = _trip_no(ctx)
+    metric = ctx.extra.get("metric", "declared")
+    with ctx.conn.cursor() as cur:
+        cur.execute("""SELECT dt_booking, dt_trip_start, dt_geofence_out, i_geofence_out_gap_min,
+                              s_geofence_out_status, s_org_node_name
+                         FROM tta_trips WHERE i_trip_no = %s""", (trip_no,))
+        t = cur.fetchone()
+        cur.execute("""SELECT s_fence_key, s_role, s_event, dt_event, i_gap_min FROM tta_trip_geofence_events
+                        WHERE i_trip_no = %s ORDER BY dt_event""", (trip_no,))
+        events = cur.fetchall()
+    b, st, out = t["dt_booking"], t["dt_trip_start"], t["dt_geofence_out"]
+    declared, hidden, total = _hours(b, st), _hours(st, out), _hours(b, out)
+    under = None if not total or not declared or total == 0 else round((total - declared) / total * 100, 1)
+    rows = [{"what": "Booking (plant entry)", "time": _plain(b), "source": "TMS record (dt_booking)"},
+            {"what": "Trip start (gate-out stamp)", "time": _plain(st), "source": "TMS record (dt_trip_start)"},
+            {"what": "Exit from the origin geofence", "time": _plain(out),
+             "source": (f"GPS: the last fix inside the {t['s_org_node_name'] or 'origin'} fence; next fix "
+                        f"{t['i_geofence_out_gap_min']} min later" if out else
+                        f"not confirmed ({t['s_geofence_out_status'] or 'not computed yet'})")}]
+    rows += [{"what": f"Fence {e['s_event']} ({e['s_role']}: {e['s_fence_key']})", "time": _plain(e["dt_event"]),
+              "source": f"GPS crossing, gap {e['i_gap_min']} min"} for e in events]
+
+    def hrs(a, z, v):
+        return f"{str(z)[:16]} − {str(a)[:16]} = {_fmt(v, 2)} h" if v is not None else "a time is missing"
+
+    pick = {
+        "declared": ("Declared by the TMS", declared, hrs(b, st, declared),
+                     "Booking to the gate-out stamp: the detention the TMS itself reports."),
+        "hidden": ("Hidden after gate-out", hidden, hrs(st, out, hidden),
+                   "Gate-out stamp to the moment the GPS shows the truck leaving the origin fence."),
+        "total": ("True total hold", total, hrs(b, out, total), "Booking to the GPS-confirmed exit."),
+        "understated": ("Understated by", under,
+                        (f"({_fmt(total, 2)} − {_fmt(declared, 2)}) ÷ {_fmt(total, 2)} × 100 = {_fmt(under, 1)}%"
+                         if under is not None else "needs both the declared and the true total"),
+                        "How much of the true hold the declared figure leaves out."),
+    }
+    if metric not in pick:
+        raise HTTPException(400, f"metric must be one of {sorted(pick)}")
+    title, value, formula, what = pick[metric]
+    return {"title": title, "format": "pct" if metric == "understated" else "hours", "value": value,
+            "method": [what, f"Trip {trip_no}. Hours are rounded to two decimals."],
+            "formula": formula, "excluded": [],
+            "columns": [{"key": "what", "label": "Event"}, {"key": "time", "label": "When", "kind": "datetime"},
+                        {"key": "source", "label": "From"}],
+            "rows": rows, "total": len(rows)}
+
+
+# ---------------------------------------------------------------------------
 # the endpoint
 # ---------------------------------------------------------------------------
 

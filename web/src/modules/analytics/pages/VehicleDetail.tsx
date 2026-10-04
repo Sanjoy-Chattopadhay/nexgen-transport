@@ -2,6 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Truck, Users, Gauge, Target, Route, BarChart3 } from 'lucide-react';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import { useApi } from '../hooks/useApi';
@@ -13,6 +14,7 @@ export default function VehicleDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const vehicleId = Number(id);
+  const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
   const { data, loading } = useApi<VehicleDetailType>(() => getVehicleDetail(vehicleId), [vehicleId]);
 
   if (loading) return <Spinner />;
@@ -31,12 +33,16 @@ export default function VehicleDetail() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <KPICard label="Total Trips" value={formatNumber(s.total_trips)} icon={Truck} color="blue" />
-        <KPICard label="Drivers Used" value={formatNumber(s.drivers_used)} icon={Users} color="green" />
-        <KPICard label="Avg Speed" value={formatSpeed(s.avg_speed_kmph)} icon={Gauge} color="cyan" />
-        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate, 60, 40)} />
-      </div>
+      <ProofGrid className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <KPICard label="Total Trips" value={formatNumber(s.total_trips)} icon={Truck} color="blue"
+          proof={{ dataset: 'vehicle.trips', params: { id: vehicleId }, value: num(s.total_trips) }} />
+        <KPICard label="Drivers Used" value={formatNumber(s.drivers_used)} icon={Users} color="green"
+          proof={{ dataset: 'vehicle.drivers', params: { id: vehicleId }, value: num(s.drivers_used) }} />
+        <KPICard label="Avg Speed" value={formatSpeed(s.avg_speed_kmph)} icon={Gauge} color="cyan"
+          proof={{ dataset: 'vehicle.speed', params: { id: vehicleId }, value: num(s.avg_speed_kmph) }} />
+        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate, 60, 40)}
+          proof={{ dataset: 'vehicle.eta', params: { id: vehicleId }, value: num(s.eta_success_rate) }} />
+      </ProofGrid>
 
       {/* Distance Summary + Drivers */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

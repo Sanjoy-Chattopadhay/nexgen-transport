@@ -4,6 +4,7 @@ import { ArrowLeft, MapPin, Target, Gauge, Truck, Zap, Clock, TrendingUp, Award,
 import { ResponsiveContainer, BarChart as RechartsBar, Bar, XAxis, YAxis, CartesianGrid, Tooltip, AreaChart as RechartsArea, Area, Cell, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ComposedChart, Line, PieChart, Pie } from 'recharts';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import { useApi } from '../hooks/useApi';
@@ -67,6 +68,7 @@ export default function DriverDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const driverId = Number(id);
+  const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
 
   // Date filter state
   const [dateFrom, setDateFrom] = useState('');
@@ -200,12 +202,16 @@ export default function DriverDetail() {
       </div>
 
       {/* ===== KPI CARDS ===== */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <KPICard label="Total Trips" value={formatNumber(s.total_trips)} icon={MapPin} color="blue" />
-        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate)} />
-        <KPICard label="Avg Speed" value={formatSpeed(s.avg_speed_kmph)} icon={Gauge} color="cyan" />
-        <KPICard label="Avg Delay" value={`${(s.avg_eta_delay_min || 0).toFixed(0)} min`} icon={Clock} color={s.avg_eta_delay_min <= 30 ? 'green' : 'amber'} />
-      </div>
+      <ProofGrid className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <KPICard label="Total Trips" value={formatNumber(s.total_trips)} icon={MapPin} color="blue"
+          proof={{ dataset: 'driver.trips', params: { id: driverId }, value: num(s.total_trips) }} />
+        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate)}
+          proof={{ dataset: 'driver.eta', params: { id: driverId }, value: num(s.eta_success_rate) }} />
+        <KPICard label="Avg Speed" value={formatSpeed(s.avg_speed_kmph)} icon={Gauge} color="cyan"
+          proof={{ dataset: 'driver.speed', params: { id: driverId }, value: num(s.avg_speed_kmph) }} />
+        <KPICard label="Avg Delay" value={s.avg_eta_delay_min != null ? `${Number(s.avg_eta_delay_min).toFixed(0)} min` : '—'} icon={Clock} color={s.avg_eta_delay_min <= 30 ? 'green' : 'amber'}
+          proof={{ dataset: 'driver.delay', params: { id: driverId }, value: num(s.avg_eta_delay_min) }} />
+      </ProofGrid>
 
       {/* ===== PERFORMANCE BAR + ROUTES/VEHICLES ===== */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

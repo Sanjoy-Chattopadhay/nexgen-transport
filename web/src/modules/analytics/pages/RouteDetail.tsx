@@ -2,6 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Clock, Target, Hash } from 'lucide-react';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import HeatmapGrid from '../components/charts/HeatmapGrid';
 import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
@@ -15,6 +16,8 @@ export default function RouteDetail() {
   const navigate = useNavigate();
   const decodedOrigin = decodeURIComponent(origin || '');
   const decodedDest = decodeURIComponent(destination || '');
+  const routeParams = { origin: decodedOrigin, destination: decodedDest };
+  const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
 
   const { data, loading } = useApi<RouteDetailType>(
     () => getRouteDetail(decodedOrigin, decodedDest),
@@ -33,12 +36,16 @@ export default function RouteDetail() {
       </button>
       <h1 className="text-2xl font-bold text-white mb-6">{decodedOrigin} → {decodedDest}</h1>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <KPICard label="Trip Count" value={formatNumber(s.trip_count)} icon={Hash} color="blue" />
-        <KPICard label="Avg Duration" value={formatDuration(s.avg_duration_min)} icon={Clock} color="purple" />
-        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate)} />
-        <KPICard label="Avg Distance" value={formatDistance(s.avg_distance_km)} icon={MapPin} color="cyan" />
-      </div>
+      <ProofGrid className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <KPICard label="Trip Count" value={formatNumber(s.trip_count)} icon={Hash} color="blue"
+          proof={{ dataset: 'route.trips', params: routeParams, value: num(s.trip_count) }} />
+        <KPICard label="Avg Duration" value={formatDuration(s.avg_duration_min)} icon={Clock} color="purple"
+          proof={{ dataset: 'route.duration', params: routeParams, value: num(s.avg_duration_min) }} />
+        <KPICard label="ETA Rate" value={formatPercent(s.eta_success_rate)} icon={Target} color={rateKpiColor(s.eta_success_rate)}
+          proof={{ dataset: 'route.eta', params: routeParams, value: num(s.eta_success_rate) }} />
+        <KPICard label="Avg Distance" value={formatDistance(s.avg_distance_km)} icon={MapPin} color="cyan"
+          proof={{ dataset: 'route.distance', params: routeParams, value: num(s.avg_distance_km) }} />
+      </ProofGrid>
 
       {data.time_patterns.length > 0 && (
         <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-6">
