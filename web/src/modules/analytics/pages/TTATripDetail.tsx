@@ -2,6 +2,7 @@ import { useParams, Link, Navigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, Clock, Gauge, AlertTriangle, Satellite, Route, BarChart3 } from 'lucide-react';
 import PageContainer from '../components/layout/PageContainer';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import Badge from '../components/ui/Badge';
 import Spinner from '../components/ui/Spinner';
 import DataTable from '../components/ui/DataTable';
@@ -70,15 +71,21 @@ export default function TTATripDetail() {
         </Link>
       </div>
 
-      {/* KPI row */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-        <KPICard label="Distance" value={formatDistance(num(metrics?.d_distance_travelled_km))} icon={Route} color="blue" />
-        <KPICard label="Transit Time" value={formatDuration(metrics?.i_transit_time_min)} icon={Clock} color="purple" />
-        <KPICard label="Moving Time" value={formatDuration(metrics?.i_moving_time_min)} icon={Gauge} color="green" />
-        <KPICard label="Stoppage" value={formatDuration(metrics?.i_stoppage_time_min)} icon={Clock} color="amber" />
-        <KPICard label="Speed Violations" value={formatNumber(metrics?.i_speed_violation)} icon={AlertTriangle} color="red" />
-        <KPICard label="GPS Pings" value={formatNumber(gps_summary?.total_pings)} icon={Satellite} color="blue" />
-      </div>
+      {/* KPI row: each opens to the source field it came from, or the fixes it counts */}
+      <ProofGrid className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+        <KPICard label="Distance" value={formatDistance(num(metrics?.d_distance_travelled_km))} icon={Route} color="blue"
+          proof={{ dataset: 'trip.source', params: { trip_no: trip.i_trip_no, field: 'distance' }, value: num(metrics?.d_distance_travelled_km) }} />
+        <KPICard label="Transit Time" value={formatDuration(metrics?.i_transit_time_min)} icon={Clock} color="purple"
+          proof={{ dataset: 'trip.source', params: { trip_no: trip.i_trip_no, field: 'transit' }, value: num(metrics?.i_transit_time_min) }} />
+        <KPICard label="Moving Time" value={formatDuration(metrics?.i_moving_time_min)} icon={Gauge} color="green"
+          proof={{ dataset: 'trip.source', params: { trip_no: trip.i_trip_no, field: 'moving' }, value: num(metrics?.i_moving_time_min) }} />
+        <KPICard label="Stoppage" value={formatDuration(metrics?.i_stoppage_time_min)} icon={Clock} color="amber"
+          proof={{ dataset: 'trip.source', params: { trip_no: trip.i_trip_no, field: 'stoppage' }, value: num(metrics?.i_stoppage_time_min) }} />
+        <KPICard label="Speed Violations" value={formatNumber(metrics?.i_speed_violation)} icon={AlertTriangle} color="red"
+          proof={{ dataset: 'trip.source', params: { trip_no: trip.i_trip_no, field: 'violations' }, value: num(metrics?.i_speed_violation) }} />
+        <KPICard label="GPS Pings" value={formatNumber(gps_summary?.total_pings)} icon={Satellite} color="blue"
+          proof={{ dataset: 'trip.gps', params: { trip_no: trip.i_trip_no }, value: num(gps_summary?.total_pings) }} />
+      </ProofGrid>
 
       {/* In-plant delay analysis (GPS-reconstructed) */}
       <PlantDelaySection tripNo={trip.i_trip_no} />

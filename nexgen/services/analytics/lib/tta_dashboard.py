@@ -236,7 +236,11 @@ def load_df(conn) -> pd.DataFrame:
 
     # numeric coercion
     df["distance_km"] = pd.to_numeric(df["distance_km"], errors="coerce")
-    df["speed_violations"] = pd.to_numeric(df["speed_violations"], errors="coerce").fillna(0).astype(int)
+    # Whether the source reported a violation count at all: the local report
+    # carries no such field, and "not reported" must not read as "none".
+    sv = pd.to_numeric(df["speed_violations"], errors="coerce")
+    df["violations_reported"] = sv.notna().astype(int)
+    df["speed_violations"] = sv.fillna(0).astype(int)
     df["gps_uptime"] = pd.to_numeric(df["gps_uptime"], errors="coerce")
 
     # avg speed = distance / moving hours, kept only in a sane band
@@ -346,6 +350,16 @@ def clean_records(df: pd.DataFrame, digits: int = 2) -> list[dict]:
     return df.astype(object).where(pd.notna(df), None).to_dict("records")
 
 
+def sum_reported(s: pd.Series):
+    """A total that is blank, not 0, when no row reports the figure."""
+    return s.sum(min_count=1)
+
+
+def per_reporting_trip(total: pd.Series, reporting: pd.Series) -> pd.Series:
+    """Violations per trip over the trips that report a count (blank when none do)."""
+    return (total / reporting.replace(0, np.nan)).round(1)
+
+
 def _otd(s: pd.Series):
     s = s.dropna()
     return round(100 * float(s.mean()), 1) if len(s) else None
@@ -373,7 +387,7 @@ def _kpi_block(df: pd.DataFrame) -> dict:
         "transporters": int(df["transporter"].nunique()),
         "vehicles": int(df["vehicle_no"].nunique()),
         "destinations": int(df["destination"].nunique()),
-        "total_km": _rnd(df["distance_km"].sum(skipna=True), 0),
+        "total_km": _rnd(df["distance_km"].sum(min_count=1), 0),
         "avg_km_per_trip": _rnd(df["distance_km"].mean(skipna=True)),
         "otd_pct": _otd(df["is_on_time"]),
         "avg_transit_hours": _rnd(df["transit_hours"].mean(skipna=True)),
@@ -383,7 +397,7 @@ def _kpi_block(df: pd.DataFrame) -> dict:
         "avg_plant_vivo_hours": _rnd(df["plant_vivo_hours"].mean(skipna=True)),
         "avg_dispatch_lead_hours": _rnd(df["dispatch_lead_hours"].mean(skipna=True)),
         "speed_violations": int(df["speed_violations"].sum()),
-        "avg_violations_per_trip": _rnd(df["speed_violations"].mean()),
+        "avg_violations_per_trip": _rnd(df.loc[df["violations_reported"] == 1, "speed_violations"].mean()),
         "avg_gps_uptime": _rnd(df["gps_uptime"].mean(skipna=True)),
         "avg_speed_kmph": _rnd(df["avg_speed_kmph"].mean(skipna=True)),
         "market_share_pct": _rnd(100 * (df["own_market"] == "Market").mean()),
@@ -422,8 +436,9 @@ def timeseries(conn, f: dict, granularity: str = "D") -> list[dict]:
         otd_pct=("is_on_time", _otd),
         avg_transit_hours=("transit_hours", "mean"),
         avg_detention_hours=("detention_hours", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
         avg_dispatch_lead_hours=("dispatch_lead_hours", "mean"),
     ).reset_index().rename(columns={key: "period"}).sort_values("period")
     return clean_records(g)
@@ -472,9 +487,10 @@ def _group_summary_df(df: pd.DataFrame, by: str, min_trips: int = 1) -> list[dic
         avg_planned_transit_hours=("planned_transit_hours", "mean"),
         avg_detention_hours=("detention_hours", "mean"),
         avg_distance_km=("distance_km", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         avg_speed_kmph=("avg_speed_kmph", "mean"),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
         avg_gps_uptime=("gps_uptime", "mean"),
         vehicles=("vehicle_no", "nunique"),
         destinations=("destination", "nunique"),
@@ -488,7 +504,7 @@ def _group_summary_df(df: pd.DataFrame, by: str, min_trips: int = 1) -> list[dic
         st = (sub.dropna(subset=["dest_state"]).groupby(by)["dest_state"]
               .agg(lambda x: x.mode().iloc[0]))
         g["state"] = g[by].map(st)
-    g["violations_per_trip"] = (g["speed_violations"] / g["trips"]).round(1)
+    g["violations_per_trip"] = per_reporting_trip(g["speed_violations"], g["violation_trips"])
     g["share_pct"] = (100 * g["trips"] / len(df)).round(1)
     g["schedule_variance_hours"] = (g["avg_transit_hours"] - g["avg_planned_transit_hours"]).round(1)
     g = g.rename(columns={by: "name"})
@@ -512,7 +528,7 @@ def geo_points(conn, f: dict) -> dict:
             judged_trips=("is_on_time", "count"),
             avg_transit_hours=("transit_hours", "mean"),
             avg_distance_km=("distance_km", "mean"),
-            total_km=("distance_km", "sum"),
+            total_km=("distance_km", sum_reported),
         ).reset_index()
         pts = clean_records(_add_otd_interval(g))
     unmapped = (df[df["dest_lat"].isna()].groupby("destination").size()
@@ -555,9 +571,10 @@ def geo_states(conn, f: dict) -> dict:
         median_transit_hours=("transit_hours", "median"),
         avg_detention_hours=("detention_hours", "mean"),
         avg_distance_km=("distance_km", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         avg_speed_kmph=("avg_speed_kmph", "mean"),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
         avg_gps_uptime=("gps_uptime", "mean"),
         destinations=("destination", "nunique"),
         transporters=("transporter", "nunique"),
@@ -566,7 +583,7 @@ def geo_states(conn, f: dict) -> dict:
     ).reset_index().rename(columns={"dest_state": "state"})
 
     g["share_pct"] = (100 * g["trips"] / len(mapped)).round(1)
-    g["violations_per_trip"] = (g["speed_violations"] / g["trips"]).round(1)
+    g["violations_per_trip"] = per_reporting_trip(g["speed_violations"], g["violation_trips"])
     for c in ("avg_transit_hours", "median_transit_hours", "avg_detention_hours",
               "avg_distance_km", "avg_speed_kmph", "avg_gps_uptime"):
         g[c] = g[c].round(1)
@@ -753,7 +770,7 @@ def fleet(conn, f: dict) -> dict:
         return out
     veh = df.dropna(subset=["vehicle_no"]).groupby("vehicle_no").agg(
         trips=("trip_id", "count"), violations=("speed_violations", "sum"),
-        avg_gps_uptime=("gps_uptime", "mean"), total_km=("distance_km", "sum"),
+        avg_gps_uptime=("gps_uptime", "mean"), total_km=("distance_km", sum_reported),
         transporter=("transporter", "first"),
     ).reset_index()
     out["top_violating_vehicles"] = clean_records(

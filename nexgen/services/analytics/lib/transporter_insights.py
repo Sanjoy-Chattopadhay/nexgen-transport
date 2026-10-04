@@ -29,6 +29,8 @@ from nexgen.services.analytics.lib.tta_dashboard import (
     apply_filters,
     clean_records,
     load_df,
+    per_reporting_trip,
+    sum_reported,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,9 +86,10 @@ def _scorecard(df: pd.DataFrame, min_trips: int = DEFAULT_MIN_TRIPS) -> pd.DataF
         avg_plant_vivo_hours=("plant_vivo_hours", "mean"),
         avg_dispatch_lead_hours=("dispatch_lead_hours", "mean"),
         avg_distance_km=("distance_km", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         avg_speed_kmph=("avg_speed_kmph", "mean"),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
         avg_gps_uptime=("gps_uptime", "mean"),
         vehicles=("vehicle_no", "nunique"),
         drivers=("driver_name", "nunique"),
@@ -135,7 +138,7 @@ def _scorecard(df: pd.DataFrame, min_trips: int = DEFAULT_MIN_TRIPS) -> pd.DataF
     # a trip with 15,149 pings carries 1,745 of them, and it scales with tracker
     # density rather than with driving. Kept for continuity, renamed in the API
     # docs, and deliberately NOT an input to the grade.
-    g["provider_violation_pings_per_trip"] = (g["speed_violations"] / g["trips"]).round(1)
+    g["provider_violation_pings_per_trip"] = per_reporting_trip(g["speed_violations"], g["violation_trips"])
     g["violations_per_trip"] = g["provider_violation_pings_per_trip"]
     g["share_pct"] = (100 * g["trips"] / len(sub)).round(1)
     g["schedule_variance_hours"] = (g["avg_transit_hours"] - g["avg_planned_transit_hours"]).round(1)
@@ -313,8 +316,9 @@ def _monthly(sub: pd.DataFrame) -> list[dict]:
         otd_pct=("is_on_time", _otd),
         avg_transit_hours=("transit_hours", "mean"),
         avg_detention_hours=("detention_hours", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
     ).reset_index().rename(columns={"dept_month": "month"}).sort_values("month")
     return clean_records(g)
 
@@ -614,17 +618,18 @@ def _vehicles(sub: pd.DataFrame, limit: int = 40) -> list[dict]:
     g = s.groupby("vehicle_no").agg(
         trips=("trip_id", "count"),
         otd_pct=("is_on_time", _otd),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
         avg_transit_hours=("transit_hours", "mean"),
         avg_speed_kmph=("avg_speed_kmph", "mean"),
         speed_violations=("speed_violations", "sum"),
+        violation_trips=("violations_reported", "sum"),
         avg_gps_uptime=("gps_uptime", "mean"),
         vehicle_type=("vehicle_type", "first"),
         vehicle_category=("vehicle_category", "first"),
         own_market=("own_market", "first"),
         last_trip=("dept_dt", "max"),
     ).reset_index()
-    g["violations_per_trip"] = (g["speed_violations"] / g["trips"]).round(1)
+    g["violations_per_trip"] = per_reporting_trip(g["speed_violations"], g["violation_trips"])
     for c in ("total_km", "avg_speed_kmph", "avg_gps_uptime", "avg_transit_hours"):
         g[c] = g[c].round(1)
     g["last_trip"] = g["last_trip"].map(_dt_str)
@@ -642,12 +647,13 @@ def _drivers(sub: pd.DataFrame, limit: int = 40) -> list[dict]:
         avg_transit_hours=("transit_hours", "mean"),
         avg_speed_kmph=("avg_speed_kmph", "mean"),
         speed_violations=("speed_violations", "sum"),
-        total_km=("distance_km", "sum"),
+        violation_trips=("violations_reported", "sum"),
+        total_km=("distance_km", sum_reported),
         vehicles=("vehicle_no", "nunique"),
         destinations=("destination", "nunique"),
         last_trip=("dept_dt", "max"),
     ).reset_index().rename(columns={"driver_name": "name"})
-    g["violations_per_trip"] = (g["speed_violations"] / g["trips"]).round(1)
+    g["violations_per_trip"] = per_reporting_trip(g["speed_violations"], g["violation_trips"])
     for c in ("avg_transit_hours", "avg_speed_kmph", "total_km"):
         g[c] = g[c].round(1)
     g["last_trip"] = g["last_trip"].map(_dt_str)
@@ -687,7 +693,7 @@ def _states(sub: pd.DataFrame) -> list[dict]:
         trips=("trip_id", "count"),
         otd_pct=("is_on_time", _otd),
         avg_transit_hours=("transit_hours", "mean"),
-        total_km=("distance_km", "sum"),
+        total_km=("distance_km", sum_reported),
     ).reset_index().rename(columns={"dest_state": "state"})
     for c in ("avg_transit_hours", "total_km"):
         g[c] = g[c].round(1)

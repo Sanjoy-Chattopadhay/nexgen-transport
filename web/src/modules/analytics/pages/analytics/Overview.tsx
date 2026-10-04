@@ -8,6 +8,7 @@ import {
 import PageContainer from '../../components/layout/PageContainer';
 import Spinner from '../../components/ui/Spinner';
 import KPICard from '../../components/ui/KPICard';
+import { ProofGrid } from '../../../../core/proof/ProofPanel';
 import ChartCard from '../../components/ui/ChartCard';
 import DonutChart from '../../components/charts/DonutChart';
 import GaugeChart from '../../components/charts/GaugeChart';
@@ -254,18 +255,27 @@ export default function Overview() {
     <PageContainer title="🏭 Executive Overview">
       {/* KPI cards */}
       {kpiLoading ? <Spinner /> : (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        // Each tile opens to how it is calculated over the filter bar's trips.
+        <ProofGrid className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <KPICard label="Total Trips" value={formatNumber(cur.trips)} icon={Factory} color="blue"
-            info={KPI_INFO.totalTrips} onDrill={drillTrips} drillLabel="List trips in filter" />
+            info={KPI_INFO.totalTrips} onDrill={drillTrips} drillLabel="List trips in filter"
+            proof={{ dataset: 'overview.trips', params, value: cur.trips ?? 0 }} />
           <KPICard label="On-time Delivery" value={cur.otd_pct != null ? `${cur.otd_pct}%` : '—'} icon={GaugeIcon}
-            color={cur.otd_pct != null && cur.otd_pct >= OTD_TARGET ? 'green' : 'red'} info={KPI_INFO.otd} />
-          <KPICard label="Avg Transit" value={cur.avg_transit_hours != null ? `${cur.avg_transit_hours} h` : '—'} icon={Clock} color="amber" info={KPI_INFO.avgTransit} />
-          <KPICard label="Total Distance" value={cur.total_km != null ? `${formatNumber(cur.total_km)} km` : '—'} icon={RouteIcon} color="cyan" info={KPI_INFO.totalKm} />
-          <KPICard label="Active Transporters" value={formatNumber(cur.transporters)} icon={Users} color="purple" info={KPI_INFO.transporters} />
-          <KPICard label="Unique Vehicles" value={formatNumber(cur.vehicles)} icon={Truck} color="blue" info={KPI_INFO.vehicles} />
-          <KPICard label="Avg Detention" value={cur.avg_detention_hours != null ? `${cur.avg_detention_hours} h` : '—'} icon={Timer} color="amber" info={KPI_INFO.avgDetention} />
-          <KPICard label="Speed Alerts / Trip" value={cur.avg_violations_per_trip ?? '—'} icon={AlertTriangle} color="red" info={KPI_INFO.violationsPerTrip} />
-        </div>
+            color={cur.otd_pct != null && cur.otd_pct >= OTD_TARGET ? 'green' : 'red'} info={KPI_INFO.otd}
+            proof={{ dataset: 'overview.otd', params, value: cur.otd_pct ?? null }} />
+          <KPICard label="Avg Transit" value={cur.avg_transit_hours != null ? `${cur.avg_transit_hours} h` : '—'} icon={Clock} color="amber" info={KPI_INFO.avgTransit}
+            proof={{ dataset: 'overview.transit', params, value: cur.avg_transit_hours ?? null }} />
+          <KPICard label="Total Distance" value={cur.total_km != null ? `${formatNumber(cur.total_km)} km` : '—'} icon={RouteIcon} color="cyan" info={KPI_INFO.totalKm}
+            proof={{ dataset: 'overview.km', params, value: cur.total_km ?? null }} />
+          <KPICard label="Active Transporters" value={formatNumber(cur.transporters)} icon={Users} color="purple" info={KPI_INFO.transporters}
+            proof={{ dataset: 'overview.transporters', params, value: cur.transporters ?? 0 }} />
+          <KPICard label="Unique Vehicles" value={formatNumber(cur.vehicles)} icon={Truck} color="blue" info={KPI_INFO.vehicles}
+            proof={{ dataset: 'overview.vehicles', params, value: cur.vehicles ?? 0 }} />
+          <KPICard label="Avg Detention" value={cur.avg_detention_hours != null ? `${cur.avg_detention_hours} h` : '—'} icon={Timer} color="amber" info={KPI_INFO.avgDetention}
+            proof={{ dataset: 'overview.detention', params, value: cur.avg_detention_hours ?? null }} />
+          <KPICard label="Speed Alerts / Trip" value={cur.avg_violations_per_trip ?? '—'} icon={AlertTriangle} color="red" info={KPI_INFO.violationsPerTrip}
+            proof={{ dataset: 'overview.violations', params, value: cur.avg_violations_per_trip ?? null }} />
+        </ProofGrid>
       )}
 
       {/* secondary KPI strip */}

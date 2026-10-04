@@ -482,6 +482,281 @@ def _trips_gps(ctx: Ctx) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# One trip's page (api/tta.py get_tta_trip): the source's figures, and its GPS
+# ---------------------------------------------------------------------------
+
+# tile -> (stored column, the source record's field names, unit, label)
+_SOURCE_FIELDS = {
+    "distance": ("d_distance_travelled_km", ("distance_travelled",), "km", "Distance"),
+    "transit": ("i_transit_time_min", ("transit_time",), "min", "Transit time"),
+    "moving": ("i_moving_time_min", ("total_moving_time",), "min", "Moving time"),
+    "stoppage": ("i_stoppage_time_min", ("total_stoppage_time",), "min", "Stoppage"),
+    "violations": ("i_speed_violation", ("speed_voilation", "speed_violation"), "int", "Speed violations"),
+}
+
+
+def _trip_no(ctx: Ctx) -> int:
+    try:
+        trip_no = int(ctx.extra.get("trip_no", ""))
+    except ValueError:
+        raise HTTPException(400, "trip_no is required")
+    # Out-of-scope trips are indistinguishable from missing ones, as on the trip page.
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT i_cnr_id FROM tta_trips WHERE i_trip_no = %s", (trip_no,))
+        row = cur.fetchone()
+    if not row or not ctx.scope.allows(row["i_cnr_id"]):
+        raise HTTPException(404, f"Trip {trip_no} not found")
+    return trip_no
+
+
+def _duration_steps(text) -> str | None:
+    """The minutes arithmetic for a duration text, exactly as parse_duration_min does it."""
+    from nexgen.shared.feed.tta import _DUR_RE, _DUR_WORDS_RE, clean
+    v = clean(text)
+    if v is None:
+        return None
+    m = _DUR_RE.search(str(v))
+    if m:
+        d, h, mi = int(m.group(1) or 0), int(m.group(2)), int(m.group(3))
+        return f"{d} d × 1440 + {h} h × 60 + {mi} min = {d * 1440 + h * 60 + mi} min"
+    w = _DUR_WORDS_RE.search(str(v))
+    if not w or not any(w.groups()):
+        return None
+    d, h, mi, sec = (int(g or 0) for g in w.groups())
+    return (f"{d} d × 1440 + {h} h × 60 + {mi} min + ⌊{sec} s ÷ 60⌋ = "
+            f"{d * 1440 + h * 60 + mi + sec // 60} min (seconds are dropped, never rounded up)")
+
+
+@dataset("trip.source")
+def _trip_source(ctx: Ctx) -> dict:
+    import json
+    trip_no = _trip_no(ctx)
+    key = ctx.extra.get("field", "")
+    if key not in _SOURCE_FIELDS:
+        raise HTTPException(400, f"field must be one of {sorted(_SOURCE_FIELDS)}")
+    col, names, unit, label = _SOURCE_FIELDS[key]
+    with ctx.conn.cursor() as cur:
+        cur.execute(f"SELECT m.{col} AS v, m.raw_json, m.dt_created, t.s_trip_class "
+                    f"FROM tta_trips t LEFT JOIN tta_trip_metrics m ON m.i_trip_no = t.i_trip_no "
+                    f"WHERE t.i_trip_no = %s", (trip_no,))
+        r = cur.fetchone() or {}
+    raw = r.get("raw_json")
+    record = (json.loads(raw) if isinstance(raw, str) else raw) or {}
+    used = next((n for n in names if n in record), None)
+    value = _plain(r.get("v"))
+    sent = record.get(used) if used else None
+    lines = [f"Reported by the source (eTrans {r.get('s_trip_class') or ''} TTA report) for trip {trip_no}: "
+             f"NexGen does not calculate this figure, it keeps what was sent.",
+             (f"Source field “{used}” = “{sent}”, stored {str(r.get('dt_created') or '')[:16]}."
+              if used else f"The source record has no {' / '.join(names)} field for this trip, so the tile is blank.")]
+    if unit == "min":
+        steps = _duration_steps(sent) if used else None
+        formula = steps or ("as reported" if used else "nothing reported")
+    elif unit == "km":
+        formula = f"“{sent}” read as a number = {_fmt(value, 2)} km" if used else "nothing reported"
+    else:
+        formula = f"“{sent}” read as a whole number = {_fmt(value)}" if used else "nothing reported"
+
+    # An independent look from the trip's own GPS, where one means the same thing.
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n, SUM(IFNULL(i_dist, 0)) AS m, MIN(dt_message) AS a, MAX(dt_message) AS b "
+                    "FROM tta_trip_gps WHERE i_trip_no = %s", (trip_no,))
+        g = cur.fetchone()
+    if g and g["n"]:
+        if key == "distance":
+            lines.append(f"Independent check: the trip's {_fmt(g['n'])} GPS fixes add up to "
+                         f"{_fmt(float(g['m'] or 0) / 1000, 1)} km (the per-fix distances the source sent).")
+        elif key == "transit":
+            span = (g["b"] - g["a"]).total_seconds() / 60 if g["a"] and g["b"] else None
+            lines.append(f"For comparison: the trip's GPS runs from {str(g['a'])[:16]} to {str(g['b'])[:16]}, "
+                         f"{_fmt(span)} min (booking to arrival, a wider window than transit).")
+    rows = [{"field": k, "value": None if v is None else str(v), "used": "this figure" if k == used else ""}
+            for k, v in sorted(record.items(), key=lambda kv: (kv[0] != used, kv[0]))]
+    return {"title": label, "format": "km" if unit == "km" else ("min" if unit == "min" else "int"),
+            "value": value, "method": lines, "formula": formula, "excluded": [],
+            "columns": [{"key": "field", "label": "Source field"}, {"key": "value", "label": "As sent"},
+                        {"key": "used", "label": "Used for"}],
+            "rows": rows, "total": len(rows)}
+
+
+@dataset("trip.gps")
+def _trip_gps(ctx: Ctx) -> dict:
+    trip_no = _trip_no(ctx)
+    sql = ("SELECT dt_message, d_lat, d_long, COALESCE(i_status_speed_kmph, i_speed) AS speed_kmph, s_status, "
+           "is_moving, s_wpnt1, i_dist, i_cdist FROM tta_trip_gps_cdist WHERE i_trip_no = %s")
+    if ctx.sort is None:
+        ctx.order = "asc"
+    rows, total = _page(ctx, sql, [trip_no], {"dt_message": "dt_message", "speed_kmph": "speed_kmph",
+                                               "i_dist": "i_dist"}, "dt_message")
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT SUM(is_moving = 1) AS mv, SUM(is_moving = 0) AS st FROM tta_trip_gps WHERE i_trip_no = %s",
+                    (trip_no,))
+        mv = cur.fetchone()
+    return {"title": "GPS pings", "format": "int", "value": total,
+            "method": [f"Every GPS fix of trip {trip_no}: its truck's fixes inside the trip's window "
+                       f"(booking to arrival), one stored copy per physical fix.",
+                       f"Moving fixes {_fmt(int(mv['mv'] or 0))}, stopped {_fmt(int(mv['st'] or 0))} "
+                       f"(the source's own moving flag)."],
+            "formula": f"COUNT(fixes of trip {trip_no}) = {_fmt(total)}",
+            "excluded": [],
+            "columns": [{"key": "dt_message", "label": "Time", "kind": "datetime"},
+                        {"key": "d_lat", "label": "Lat", "kind": "number", "digits": 5},
+                        {"key": "d_long", "label": "Lon", "kind": "number", "digits": 5},
+                        {"key": "speed_kmph", "label": "km/h", "kind": "number"},
+                        {"key": "s_status", "label": "Status"},
+                        {"key": "is_moving", "label": "Moving", "kind": "bool"},
+                        {"key": "s_wpnt1", "label": "Near"},
+                        {"key": "i_dist", "label": "Step m", "kind": "number"},
+                        {"key": "i_cdist", "label": "Cumulative m", "kind": "number"}],
+            "rows": rows, "total": total}
+
+
+# ---------------------------------------------------------------------------
+# Analytics > Overview: the KPI block (lib/tta_dashboard.py kpis / _kpi_block)
+# ---------------------------------------------------------------------------
+# Computed in pandas over the analytics filter bar's frame. The proof builds
+# that same frame with the same two functions (dashboard_filters, then
+# apply_filters(load_df())) and reads the figure from the same _kpi_block, so
+# the tile and its recount are one computation; only the records and the
+# arithmetic are added.
+
+_OV_MULTI = ("transporters", "destinations", "vehicle_categories", "own_market", "consignors", "consignees",
+             "vehicles", "drivers", "device_types", "asset_makes")
+
+
+def _overview_frame(ctx: Ctx):
+    from nexgen.services.analytics.api.tta_dashboard import dashboard_filters
+    from nexgen.services.analytics.lib import tta_dashboard as svc
+    f = dashboard_filters(date_from=ctx.date_from, date_to=ctx.date_to, scope=ctx.scope, tclass=ctx.tclass,
+                          **{k: ctx.extra.get(k, "") for k in _OV_MULTI})
+    df = svc.apply_filters(svc.load_df(ctx.conn), f)
+    fr, to = _day(ctx.date_from), _day(ctx.date_to)
+    lines = [f"Trips dispatched from {fr} to {to}, both days whole." if fr and to else
+             "Trips dispatched at any time (no date window)."]
+    lines += ctx.scope_lines(True)
+    for k in _OV_MULTI:
+        v = f.get(k)
+        if v:
+            lines.append(f"{k.replace('_', ' ').capitalize()}: {', '.join(map(str, v))}.")
+    lines.append("Names spelled several ways (case, spacing) are folded into one before anything is counted.")
+    return df, svc, lines
+
+
+_OV_COLS = [
+    {"key": "trip_id", "label": "Trip", "link": "/trips/{trip_id}"},
+    {"key": "dept_dt", "label": "Dispatched", "kind": "datetime"},
+    {"key": "transporter", "label": "Transporter"},
+    {"key": "vehicle_no", "label": "Vehicle"},
+    {"key": "destination", "label": "To"},
+    {"key": "delivery_status", "label": "Delivery status"},
+    {"key": "is_on_time", "label": "On time", "kind": "bool"},
+    {"key": "transit_hours", "label": "Transit h", "kind": "number", "digits": 1},
+    {"key": "detention_hours", "label": "Detention h", "kind": "number", "digits": 1},
+    {"key": "distance_km", "label": "Km", "kind": "number", "digits": 1},
+    {"key": "speed_violations", "label": "Speed alerts", "kind": "number"},
+]
+
+
+def _frame_page(ctx: Ctx, df, sort_default: str, cols=None) -> tuple[list[dict], int]:
+    from nexgen.services.analytics.lib.tta_dashboard import clean_records
+    cols = cols or [c["key"] for c in _OV_COLS]
+    key = ctx.sort if ctx.sort in df.columns else sort_default
+    out = df.sort_values(key, ascending=(ctx.order == "asc"), na_position="last") if key in df.columns else df
+    if not ctx.extra.get("csv"):
+        out = out.iloc[(ctx.page - 1) * ctx.page_size: ctx.page * ctx.page_size]
+    return clean_records(out[[c for c in cols if c in out.columns]]), int(len(df))
+
+
+def _ov_metric(ctx: Ctx, key: str) -> dict:
+    df, svc, lines = _overview_frame(ctx)
+    block = svc._kpi_block(df) if len(df) else {}
+    n = int(len(df))
+    if key == "trips":
+        rows, total = _frame_page(ctx, df, "dept_dt")
+        return {"title": "Total trips", "format": "int", "value": block.get("trips", 0),
+                "method": ["Each trip counted once.", *lines], "formula": f"COUNT(trips) = {_fmt(n)}",
+                "excluded": [], "columns": _OV_COLS, "rows": rows, "total": total}
+    if key == "otd":
+        judged = df[df["is_on_time"].notna()]
+        on = int((judged["is_on_time"] == 1).sum())
+        rows, total = _frame_page(ctx, judged, "dept_dt")
+        return {"title": "On-time delivery", "format": "pct", "value": block.get("otd_pct"),
+                "method": ["Of the trips that can be judged, the share delivered on time.",
+                           "On time when the delivery status says “on time”, late when it says "
+                           "“delay”; with no status, on time when delivered no later than due "
+                           "(delivery delta ≤ 0).", *lines],
+                "formula": (f"{_fmt(on)} on time ÷ {_fmt(len(judged))} judged × 100 = "
+                            f"{_fmt(block.get('otd_pct'), 1)}%" if len(judged) else "no trip can be judged yet"),
+                "excluded": ([{"label": "Trips with neither a delivery status nor a delivery time (not judged)",
+                               "count": n - len(judged)}] if n - len(judged) else []),
+                "columns": _OV_COLS, "rows": rows, "total": total}
+    if key in ("transit", "detention"):
+        col = f"{key}_hours"
+        have = df[df[col].notna()]
+        rows, total = _frame_page(ctx, have, col)
+        mean = float(have[col].mean()) if len(have) else None
+        value = block.get(f"avg_{key}_hours")
+        excluded = []
+        if n - len(have):
+            label = ("Trips with no transit time, or a transit of 0 (a force-closed trip), not averaged"
+                     if key == "transit" else "Trips with no detention from the source (not averaged)")
+            excluded.append({"label": label, "count": n - len(have)})
+        return {"title": f"Average {key}", "format": "hours", "value": value,
+                "method": [f"The mean of each trip's {key} in hours (the source's minutes ÷ 60).", *lines],
+                "formula": (f"{_fmt(float(have[col].sum()), 2)} h summed over {_fmt(len(have))} trips ÷ "
+                            f"{_fmt(len(have))} = {_fmt(mean, 3)} h, rounded to {_fmt(value, 1)} h"
+                            if len(have) else "no trip in the window has this figure"),
+                "excluded": excluded, "columns": _OV_COLS, "rows": rows, "total": total}
+    if key == "km":
+        have = df[df["distance_km"].notna()]
+        rows, total = _frame_page(ctx, have, "distance_km")
+        return {"title": "Total distance", "format": "km", "value": block.get("total_km"),
+                "method": ["Each trip's distance travelled, as the source reports it, added up "
+                           "and rounded to whole km.", *lines],
+                "formula": (f"SUM(distance) over {_fmt(len(have))} trips = {_fmt(float(have['distance_km'].sum()), 2)} km"
+                            f" → {_fmt(block.get('total_km'))} km" if len(have) else "no trip reports a distance"),
+                "excluded": ([{"label": "Trips with no distance from the source (not added)", "count": n - len(have)}]
+                             if n - len(have) else []),
+                "columns": _OV_COLS, "rows": rows, "total": total}
+    if key == "violations":
+        reporting = df[df["violations_reported"] == 1]
+        rows, total = _frame_page(ctx, reporting, "speed_violations")
+        sv, k = int(reporting["speed_violations"].sum()), int(len(reporting))
+        return {"title": "Speed alerts per trip", "format": "num", "value": block.get("avg_violations_per_trip"),
+                "method": ["Speed violations the source reports, divided by the trips that report a count.",
+                           "A trip whose report has no violation field is left out, not counted as 0: "
+                           "the local report carries no such field.", *lines],
+                "formula": (f"{_fmt(sv)} violations ÷ {_fmt(k)} reporting trips = {_fmt(sv / k, 3)}, "
+                            f"rounded to {_fmt(block.get('avg_violations_per_trip'), 1)}" if k
+                            else "no trip in the window reports a violation count"),
+                "excluded": ([{"label": "Trips whose source reports no violation count (not averaged)", "count": n - k}]
+                             if n - k else []),
+                "columns": _OV_COLS, "rows": rows, "total": total}
+    # distinct transporters / vehicles: one row per name
+    col, label = ("transporter", "transporter") if key == "transporters" else ("vehicle_no", "vehicle")
+    named = df[df[col].notna()]
+    g = (named.groupby(col).agg(trips=("trip_id", "count"), km=("distance_km", "sum")).reset_index()
+         .rename(columns={col: "name"}))
+    if ctx.sort not in ("trips", "km", "name"):
+        ctx.sort = "trips"
+    rows, total = _frame_page(ctx, g, "trips", ["name", "trips", "km"])
+    return {"title": f"Active {label}s" if key == "transporters" else "Unique vehicles", "format": "int",
+            "value": block.get(key, 0),
+            "method": [f"The different {label}s that ran at least one trip in the window, each counted once.", *lines],
+            "formula": f"COUNT(DISTINCT {label}) over {_fmt(n)} trips = {_fmt(block.get(key, 0))}",
+            "excluded": ([{"label": f"Trips with no {label} named (nothing to count)", "count": n - len(named)}]
+                         if n - len(named) else []),
+            "columns": [{"key": "name", "label": label.capitalize()},
+                        {"key": "trips", "label": "Trips", "kind": "number"},
+                        {"key": "km", "label": "Km", "kind": "number", "digits": 1}],
+            "rows": rows, "total": total}
+
+
+for _k in ("trips", "otd", "transit", "detention", "km", "violations", "transporters", "vehicles"):
+    DATASETS[f"overview.{_k}"] = (lambda key: (lambda ctx: _ov_metric(ctx, key)))(_k)
+
+
+# ---------------------------------------------------------------------------
 # the endpoint
 # ---------------------------------------------------------------------------
 
