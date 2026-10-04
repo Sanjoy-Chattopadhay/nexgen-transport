@@ -4,6 +4,7 @@ import PageContainer from '../components/layout/PageContainer';
 import Spinner from '../components/ui/Spinner';
 import DataTable from '../components/ui/DataTable';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import BarChart from '../components/charts/BarChart';
 import HeatLayerMap from '../components/tta/HeatLayerMap';
 import { useApi } from '../hooks/useApi';
@@ -13,6 +14,9 @@ import {
 } from '../services/tta';
 import { formatNumber } from '../lib/formatters';
 import { tc } from '../../../core/theme';
+
+/** A tile's raw figure for its proof (the API may send numbers as strings). */
+const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
 
 function heatColor(v: number, max: number): string {
   if (v === 0 || max === 0) return 'bg-gray-800/40';
@@ -39,13 +43,18 @@ export default function TTANetwork() {
     <PageContainer>
       {/* Fleet KPIs */}
       {wp?.kpis && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-          <KPICard label="GPS Pings" value={formatNumber(wp.kpis.pings)} icon={Radar} color="blue" />
-          <KPICard label="Waypoints Seen" value={formatNumber(wp.kpis.waypoints)} icon={MapPin} color="purple" />
-          <KPICard label="States Covered" value={wp.kpis.states} icon={Landmark} color="cyan" />
-          <KPICard label="Trips Tracked" value={formatNumber(wp.kpis.trips)} icon={Flame} color="green" />
-          <KPICard label="Vehicles" value={formatNumber(wp.kpis.vehicles)} icon={Radar} color="amber" />
-        </div>
+        <ProofGrid className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <KPICard label="GPS Pings" value={formatNumber(wp.kpis.pings)} icon={Radar} color="blue"
+            proof={{ dataset: 'network.pings', value: num(wp.kpis.pings) }} />
+          <KPICard label="Waypoints Seen" value={formatNumber(wp.kpis.waypoints)} icon={MapPin} color="purple"
+            proof={{ dataset: 'network.waypoints', value: num(wp.kpis.waypoints) }} />
+          <KPICard label="States Covered" value={wp.kpis.states} icon={Landmark} color="cyan"
+            proof={{ dataset: 'network.states', value: num(wp.kpis.states) }} />
+          <KPICard label="Trips Tracked" value={formatNumber(wp.kpis.trips)} icon={Flame} color="green"
+            proof={{ dataset: 'network.trips', value: num(wp.kpis.trips) }} />
+          <KPICard label="Vehicles" value={formatNumber(wp.kpis.vehicles)} icon={Radar} color="amber"
+            proof={{ dataset: 'network.vehicles', value: num(wp.kpis.vehicles) }} />
+        </ProofGrid>
       )}
 
       {/* India heatmap */}

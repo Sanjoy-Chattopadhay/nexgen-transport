@@ -10,7 +10,7 @@ export interface ProofSpec {
   /** The page's own filters (date window ...); consignor and zonal/local are added for every call. */
   params?: Record<string, string | number | undefined | null>;
   /** The number on the tile, as a number, so the panel can show the recount agrees. */
-  value?: number | null;
+  value?: number | string | null;
 }
 
 export interface OpenProof {

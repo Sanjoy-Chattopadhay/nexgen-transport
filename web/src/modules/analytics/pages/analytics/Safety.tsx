@@ -9,6 +9,7 @@ import Spinner from '../../components/ui/Spinner';
 import ChartCard from '../../components/ui/ChartCard';
 import DataTable from '../../components/ui/DataTable';
 import KPICard from '../../components/ui/KPICard';
+import { ProofGrid } from '../../../../core/proof/ProofPanel';
 import Badge from '../../components/ui/Badge';
 import DualAxisChart from '../../components/charts/DualAxisChart';
 import BarChart from '../../components/charts/BarChart';
@@ -106,6 +107,8 @@ export default function Safety() {
   const [hideStopped, setHideStopped] = useState(true);
 
   const limitKey = `${roadLimit}|${plantLimit}`;
+  // The proofs are judged against the same two limits as every tile here.
+  const proofParams = { ...params, road_limit: roadLimit, plant_limit: plantLimit };
 
   const { data: ov, loading } = useApi(
     () => getSpeedOverview(roadLimit, plantLimit, params), [paramsKey, limitKey]);
@@ -213,16 +216,22 @@ export default function Safety() {
 
       {loading ? <Spinner /> : ov && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <ProofGrid className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <KPICard label="Violation episodes" value={formatNumber(ov.totals.episodes)}
+              proof={{ dataset: 'safety.episodes', params: proofParams, value: ov.totals.episodes }}
               icon={ShieldAlert} color={ov.totals.episodes ? 'red' : 'green'} />
             <KPICard label="Violations / day"
-              value={ov.totals.episodes_per_day ?? '—'} icon={AlertTriangle} color="amber" />
+              value={ov.totals.episodes_per_day ?? '—'}
+              proof={{ dataset: 'safety.perday', params: proofParams, value: ov.totals.episodes_per_day ?? null }}
+              icon={AlertTriangle} color="amber" />
             <KPICard label="Time over the limit" value={hrs(ov.totals.over_minutes)}
+              proof={{ dataset: 'safety.overmin', params: proofParams, value: ov.totals.over_minutes }}
               icon={Clock} color="amber" />
             <KPICard label="Distance over the limit"
-              value={`${formatNumber(ov.totals.over_dist_km)} km`} icon={TrendingDown} color="red" />
-          </div>
+              value={`${formatNumber(ov.totals.over_dist_km)} km`}
+              proof={{ dataset: 'safety.overkm', params: proofParams, value: ov.totals.over_dist_km }}
+              icon={TrendingDown} color="red" />
+          </ProofGrid>
 
           <p className="text-xs text-gray-500 mb-6 -mt-2">
             Measured across {formatNumber(ov.coverage.trips_with_gps)} of{' '}

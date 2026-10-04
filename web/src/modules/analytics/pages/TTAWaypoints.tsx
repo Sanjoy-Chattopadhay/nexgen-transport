@@ -6,11 +6,15 @@ import DataTable from '../components/ui/DataTable';
 import SearchInput from '../components/ui/SearchInput';
 import Pagination from '../components/ui/Pagination';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import WaypointReport from '../components/tta/WaypointReport';
 import { useApi } from '../hooks/useApi';
 import { backendApi } from '../services/api';
 import { KPI_INFO } from '../lib/kpiInfo';
 import { formatNumber, formatDuration, formatDateTime } from '../lib/formatters';
+
+/** A tile's raw figure for its proof (the API may send numbers as strings). */
+const num = (v: unknown) => (v == null || v === '' ? null : Number(v));
 
 const getWaypoints = (page: number, search: string, sort: string) =>
   backendApi.get<any>('/tta/waypoints', { params: { page, page_size: 25, search, sort } });
@@ -63,13 +67,18 @@ export default function TTAWaypoints() {
     <PageContainer>
       {/* KPIs */}
       {data?.kpis && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-          <KPICard label="Waypoints Registered" value={formatNumber(data.kpis.waypoints)} icon={MapPin} color="blue" info={KPI_INFO.waypointsRegistered} />
-          <KPICard label="Stop Events Stored" value={formatNumber(data.kpis.total_stop_events)} icon={Flame} color="amber" info={KPI_INFO.stopEvents} />
-          <KPICard label="Total Standstill" value={formatDuration(data.kpis.total_stopped_min)} icon={Clock} color="purple" info={KPI_INFO.totalStandstill} />
-          <KPICard label="Longest Single Stop" value={formatDuration(data.kpis.longest_stop_min)} icon={Clock} color="red" info={KPI_INFO.longestStop} />
-          <KPICard label="Worst Waypoint" value={data.kpis.worst_waypoint ? (data.kpis.worst_waypoint.length > 14 ? data.kpis.worst_waypoint.slice(0, 14) + '…' : data.kpis.worst_waypoint) : '-'} icon={Landmark} color="cyan" info={KPI_INFO.worstWaypoint} />
-        </div>
+        <ProofGrid className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <KPICard label="Waypoints Registered" value={formatNumber(data.kpis.waypoints)} icon={MapPin} color="blue" info={KPI_INFO.waypointsRegistered} 
+            proof={{ dataset: 'waypoints.count', value: num(data.kpis.waypoints) }} />
+          <KPICard label="Stop Events Stored" value={formatNumber(data.kpis.total_stop_events)} icon={Flame} color="amber" info={KPI_INFO.stopEvents} 
+            proof={{ dataset: 'waypoints.events', value: num(data.kpis.total_stop_events) }} />
+          <KPICard label="Total Standstill" value={formatDuration(data.kpis.total_stopped_min)} icon={Clock} color="purple" info={KPI_INFO.totalStandstill} 
+            proof={{ dataset: 'waypoints.standstill', value: num(data.kpis.total_stopped_min) }} />
+          <KPICard label="Longest Single Stop" value={formatDuration(data.kpis.longest_stop_min)} icon={Clock} color="red" info={KPI_INFO.longestStop} 
+            proof={{ dataset: 'waypoints.longest', value: num(data.kpis.longest_stop_min) }} />
+          <KPICard label="Worst Waypoint" value={data.kpis.worst_waypoint ? (data.kpis.worst_waypoint.length > 14 ? data.kpis.worst_waypoint.slice(0, 14) + '…' : data.kpis.worst_waypoint) : '-'} icon={Landmark} color="cyan" info={KPI_INFO.worstWaypoint} 
+            proof={{ dataset: 'waypoints.worst', value: data.kpis.worst_waypoint ?? null }} />
+        </ProofGrid>
       )}
 
       {/* Registry table */}

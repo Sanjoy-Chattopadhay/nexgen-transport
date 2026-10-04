@@ -1167,6 +1167,417 @@ def _trip_hold(ctx: Ctx) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Ping density map (lib/tta_network.py): the network headline
+# ---------------------------------------------------------------------------
+# The tiles read gps_network_kpi, rebuilt from all GPS by the 6-hourly
+# waypoint-registry job, and fall back to the same counts computed live while
+# that rollup is empty (a fresh database). The proof always counts live, over
+# the same source (_scoped_source), and says which the tile used.
+
+def _network(ctx: Ctx, metric: str) -> dict:
+    from nexgen.services.analytics.lib.tta_network import _scoped_source
+    cnr = ctx.scope.id if ctx.scope.active else None
+    source, sp = _scoped_source(cnr)
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT dt_refreshed FROM gps_network_kpi WHERE cnr_id = %s", (0 if cnr is None else cnr,))
+        roll = cur.fetchone()
+    rolled = roll is not None
+    how_tile = (f"The tile reads the network rollup, last rebuilt {str(roll['dt_refreshed'])[:16]} (it is rebuilt every "
+                "6 hours from all GPS); this dropdown counts live, so pings that arrived since are counted here and "
+                "not yet on the tile." if rolled else
+                "The rollup has not been built yet (it is rebuilt every 6 hours), so the tile is computed live, "
+                "exactly as here.")
+    scope = ctx.scope_lines(False)
+    spec = {
+        "pings": ("GPS pings", "COUNT(*)", None,
+                  "Every GPS row of every trip. A fix shared by two consignments on one truck is in both trips' "
+                  "copies and counts twice here."),
+        "waypoints": ("Waypoints seen", "COUNT(DISTINCT gp.s_wpnt1)", "gp.s_wpnt1",
+                      "The different nearest-waypoint names the source attached to the pings."),
+        "states": ("States covered", "COUNT(DISTINCT gp.s_wpnt1_st_abbr)", "gp.s_wpnt1_st_abbr",
+                   "The different state codes of those waypoints."),
+        "trips": ("Trips tracked", "COUNT(DISTINCT gp.i_trip_no)", "gp.i_trip_no", "The trips with at least one ping."),
+        "vehicles": ("Vehicles", "COUNT(DISTINCT gp.s_asset_id)", "gp.s_asset_id", "The trucks with at least one ping."),
+    }
+    title, expr, key, what = spec[metric]
+    value = _scalar(ctx, f"SELECT {expr} FROM {source}", sp)
+    if metric == "pings":
+        sql = (f"SELECT gp.i_trip_no AS trip_no, gp.dt_message, gp.s_asset_id AS vehicle, gp.s_wpnt1 AS waypoint, "
+               f"gp.s_wpnt1_st_abbr AS state, gp.is_moving FROM {source}")
+        rows, total = _page(ctx, sql, sp, {"dt_message": "dt_message", "trip_no": "trip_no"}, "dt_message")
+        cols = [{"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+                {"key": "dt_message", "label": "Time", "kind": "datetime"}, {"key": "vehicle", "label": "Vehicle"},
+                {"key": "waypoint", "label": "Near"}, {"key": "state", "label": "State"},
+                {"key": "is_moving", "label": "Moving", "kind": "bool"}]
+        excluded = []
+    else:
+        label = {"waypoints": "Waypoint", "states": "State", "trips": "Trip", "vehicles": "Vehicle"}[metric]
+        sql = (f"SELECT {key} AS name, COUNT(*) AS pings, COUNT(DISTINCT gp.i_trip_no) AS trips "
+               f"FROM {source} WHERE {key} IS NOT NULL GROUP BY {key}")
+        if ctx.sort is None:
+            ctx.sort = "pings"
+        rows, total = _page(ctx, sql, sp, {"pings": "pings", "trips": "trips", "name": "name"}, "pings")
+        cols = [{"key": "name", "label": label, **({"link": "/trips/{name}"} if metric == "trips" else {})},
+                {"key": "pings", "label": "Pings", "kind": "number"}, {"key": "trips", "label": "Trips", "kind": "number"}]
+        missing = int(_scalar(ctx, f"SELECT COUNT(*) FROM {source} WHERE {key} IS NULL", sp) or 0)
+        excluded = ([{"label": f"Pings with no {label.lower()} (nothing to count)", "count": missing}] if missing else [])
+    return {"title": title, "format": "int", "value": value, "method": [what, how_tile, *scope],
+            "formula": f"{expr.replace('gp.', '')} over the GPS rows = {_fmt(value)}",
+            "excluded": excluded, "differs_note": how_tile, "columns": cols, "rows": rows, "total": total}
+
+
+for _m in ("pings", "waypoints", "states", "trips", "vehicles"):
+    DATASETS[f"network.{_m}"] = (lambda m: (lambda ctx: _network(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
+# Waypoint analysis (lib/tta_waypoints.py list_waypoints): the registry headline
+# ---------------------------------------------------------------------------
+
+def _waypoints(ctx: Ctx, metric: str) -> dict:
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT MAX(last_refreshed) AS t FROM tta_waypoint_stats")
+        refreshed = (cur.fetchone() or {}).get("t")
+    base = ("FROM tta_waypoints w LEFT JOIN tta_waypoint_stats s ON s.waypoint_id = w.id")
+    sql = (f"SELECT w.s_wpnt AS waypoint, w.s_state AS state, s.total_trips AS trips, s.total_pings AS pings, "
+           f"s.stop_events, s.stopped_min, s.longest_stop_min {base}")
+    cols = [{"key": "waypoint", "label": "Waypoint"}, {"key": "state", "label": "State"},
+            {"key": "trips", "label": "Trips", "kind": "number"}, {"key": "pings", "label": "Pings", "kind": "number"},
+            {"key": "stop_events", "label": "Stop events", "kind": "number"},
+            {"key": "stopped_min", "label": "Standstill min", "kind": "number"},
+            {"key": "longest_stop_min", "label": "Longest stop min", "kind": "number"}]
+    sort = {"waypoint": "waypoint", "trips": "trips", "pings": "pings", "stop_events": "stop_events",
+            "stopped_min": "stopped_min", "longest_stop_min": "longest_stop_min"}
+    reg = [f"From the waypoint registry: every place the GPS reports a nearest waypoint, with its stop statistics, "
+           f"rebuilt every 6 hours from all GPS (last rebuilt {str(refreshed)[:16] if refreshed else 'not yet'}).",
+           "Fleet-wide: the consignor filter and the page's search box do not apply to these figures.",
+           "Standstill is gap-attributed: the time from a stopped ping to the next one, capped at 15 minutes per gap."]
+    if metric == "count":
+        value = int(_scalar(ctx, f"SELECT COUNT(*) {base}", []) or 0)
+        rows, total = _page(ctx, sql, [], sort, "stopped_min")
+        return {"title": "Waypoints registered", "format": "int", "value": value, "method": reg,
+                "formula": f"COUNT(registered waypoints) = {_fmt(value)}", "excluded": [],
+                "columns": cols, "rows": rows, "total": total}
+    if metric in ("events", "standstill"):
+        col = "stop_events" if metric == "events" else "stopped_min"
+        value = _scalar(ctx, f"SELECT SUM(s.{col}) {base}", [])
+        have = f"{sql} WHERE s.{col} > 0"
+        if ctx.sort is None:
+            ctx.sort = col
+        rows, total = _page(ctx, have, [], sort, col)
+        title = "Stop events stored" if metric == "events" else "Total standstill"
+        return {"title": title, "format": "int" if metric == "events" else "min", "value": value, "method": reg,
+                "formula": f"SUM({col}) over {_fmt(total)} waypoints = {_fmt(value)}"
+                           + ("" if metric == "events" else " min"),
+                "excluded": [], "columns": cols, "rows": rows, "total": total}
+    if metric == "longest":
+        value = _scalar(ctx, f"SELECT MAX(s.longest_stop_min) {base}", [])
+        ctx.sort, ctx.order = ctx.sort or "longest_stop_min", ctx.order if ctx.sort else "desc"
+        rows, total = _page(ctx, f"{sql} WHERE s.longest_stop_min IS NOT NULL", [], sort, "longest_stop_min")
+        return {"title": "Longest single stop", "format": "min", "value": value, "method": reg,
+                "formula": f"MAX(longest stop at any waypoint) = {_fmt(value)} min (the first row below)",
+                "excluded": [], "columns": cols, "rows": rows, "total": total}
+    # worst waypoint: the one with the most standstill
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT w.s_wpnt, s.stopped_min FROM tta_waypoints w JOIN tta_waypoint_stats s "
+                    "ON s.waypoint_id = w.id ORDER BY s.stopped_min DESC LIMIT 1")
+        top = cur.fetchone()
+    if ctx.sort is None:
+        ctx.sort, ctx.order = "stopped_min", "desc"
+    rows, total = _page(ctx, f"{sql} WHERE s.stopped_min IS NOT NULL", [], sort, "stopped_min")
+    return {"title": "Worst waypoint", "format": "text", "value": top["s_wpnt"] if top else None, "method": reg,
+            "formula": (f"the waypoint with the most standstill: {top['s_wpnt']} ({_fmt(top['stopped_min'])} min), "
+                        "the first row below" if top else "no waypoint has standstill yet"),
+            "excluded": [], "columns": cols, "rows": rows, "total": total}
+
+
+for _m in ("count", "events", "standstill", "longest", "worst"):
+    DATASETS[f"waypoints.{_m}"] = (lambda m: (lambda ctx: _waypoints(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
+# Unscheduled stops (lib/tta_hotspot_clusters.py list_hotspots, tta_hotspots.py)
+# ---------------------------------------------------------------------------
+
+_HOT_COLS = [
+    {"key": "place", "label": "Place"}, {"key": "nearest", "label": "Nearest node"},
+    {"key": "stops", "label": "Stops", "kind": "number"}, {"key": "trips", "label": "Trips", "kind": "number"},
+    {"key": "vehicles", "label": "Vehicles", "kind": "number"}, {"key": "carriers", "label": "Carriers", "kind": "number"},
+    {"key": "score", "label": "Score", "kind": "number", "digits": 1},
+    {"key": "low_support", "label": "Low support", "kind": "bool"}, {"key": "amenity", "label": "Amenity nearby"},
+]
+
+
+def _hotspots(ctx: Ctx, metric: str) -> dict:
+    cid = ctx.scope.id or 0
+    built = _scalar(ctx, "SELECT MAX(dt_refreshed) FROM gps_stop_clusters WHERE cnr_id = %s", [cid])
+    newer = int(_scalar(ctx, "SELECT COUNT(*) FROM gps_stop_events WHERE dt_created > %s"
+                        + (" AND cnr_id = %s" if cid else ""), [built] + ([cid] if cid else [])) or 0) if built else 0
+    scope = ["Consignor: all (the rollup row)." if not cid else f"Consignor: {ctx.scope.name or cid}.",
+             "Clusters are rebuilt nightly from the extracted stops (the hotspots job); "
+             + ("none has been built yet." if not built else
+                f"these were built at {_plain(built)[:16]}"
+                + (f", and {_fmt(newer)} stops extracted since then are not in any cluster yet." if newer
+                   else ", after the last stop was extracted."))]
+    if metric == "corpus":
+        where, params = ("WHERE cnr_id = %s", [cid]) if cid else ("", [])
+        sql = (f"SELECT i_trip_no AS trip_no, s_asset_id AS vehicle, s_trans_name AS carrier, dt_start, "
+               f"d_duration_min AS minutes, i_hour AS hour, s_wpnt AS near FROM gps_stop_events {where}")
+        rows, total = _page(ctx, sql, params, {"dt_start": "dt_start", "minutes": "minutes"}, "dt_start")
+        return {"title": "Stop corpus", "format": "int", "value": total,
+                "method": ["Every stop extracted from the trips' GPS so far: a standstill long enough to count, "
+                           "with its place, time and length.", scope[0]],
+                "formula": f"COUNT(extracted stops) = {_fmt(total)}", "excluded": [],
+                "columns": [{"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+                            {"key": "vehicle", "label": "Vehicle"}, {"key": "carrier", "label": "Carrier"},
+                            {"key": "dt_start", "label": "Stopped at", "kind": "datetime"},
+                            {"key": "minutes", "label": "Minutes", "kind": "number", "digits": 1},
+                            {"key": "hour", "label": "Hour", "kind": "number"}, {"key": "near", "label": "Near"}],
+                "rows": rows, "total": total}
+    sql = ("SELECT s_place_key AS place, s_nearest_node AS nearest, i_stops AS stops, i_trips AS trips, "
+           "i_vehicles AS vehicles, i_carriers AS carriers, d_score AS score, b_low_support AS low_support, "
+           "s_amenity_hint AS amenity FROM gps_stop_clusters WHERE cnr_id = %s")
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n, SUM(b_low_support) AS low, SUM(s_amenity_hint IS NOT NULL) AS amen, "
+                    "SUM(i_stops) AS stops, MAX(d_score) AS top FROM gps_stop_clusters WHERE cnr_id = %s", (cid,))
+        k = cur.fetchone()
+    sortable = {"score": "score", "stops": "stops", "trips": "trips", "place": "place"}
+    if metric == "clusters":
+        rows, total = _page(ctx, sql, [cid], sortable, "score")
+        return {"title": "Hotspots in queue", "format": "int", "value": int(k["n"] or 0),
+                "method": ["Every stop cluster found: places where unscheduled stopping recurs across vehicles.",
+                           f"Includes the {_fmt(int(k['low'] or 0))} low-support and {_fmt(int(k['amen'] or 0))} "
+                           "amenity-adjacent clusters the queue hides unless you ask for them.", *scope],
+                "formula": f"COUNT(clusters) = {_fmt(int(k['n'] or 0))}", "excluded": [],
+                "columns": _HOT_COLS, "rows": rows, "total": total}
+    if metric == "stops":
+        rows, total = _page(ctx, sql, [cid], sortable, "stops")
+        stops = int(k["stops"] or 0)
+        return {"title": "Stops clustered", "format": "int", "value": stops,
+                "method": ["The stops that fall inside a cluster, added up over every cluster.", *scope],
+                "formula": f"SUM(stops per cluster) over {_fmt(int(k['n'] or 0))} clusters = {_fmt(stops)}",
+                "excluded": [], "columns": _HOT_COLS, "rows": rows, "total": total}
+    rows, total = _page(ctx, sql, [cid], sortable, "score")
+    return {"title": "Top score", "format": "num", "value": _plain(k["top"]),
+            "method": ["The highest investigation score of any cluster (the first row below). The score weighs "
+                       "recurrence across vehicles and carriers, dwell, night share and isolation.", *scope],
+            "formula": f"MAX(score) = {_fmt(_plain(k['top']), 2)}" if k["top"] is not None else "no clusters yet",
+            "excluded": [], "columns": _HOT_COLS, "rows": rows, "total": total}
+
+
+for _m in ("clusters", "stops", "top", "corpus"):
+    DATASETS[f"hotspots.{_m}"] = (lambda m: (lambda ctx: _hotspots(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
+# Analytics > Speed & safety (lib/speed_safety.py speed_overview)
+# ---------------------------------------------------------------------------
+
+def _isna(v) -> bool:
+    import pandas as pd
+    return v is None or bool(pd.isna(v))
+
+
+def _num(v, digits: int | None = None):
+    """A pandas cell as a JSON-safe number (NaN/NaT read as missing, never 0)."""
+    if _isna(v):
+        return None
+    return round(float(v), digits) if digits is not None else float(v)
+
+
+def _safety(ctx: Ctx, metric: str) -> dict:
+    from nexgen.services.analytics.api.tta_dashboard import dashboard_filters
+    from nexgen.services.analytics.lib import speed_profile as sp
+    from nexgen.services.analytics.lib import speed_safety as svc
+    f = dashboard_filters(date_from=ctx.date_from, date_to=ctx.date_to, scope=ctx.scope, tclass=ctx.tclass,
+                          **{k: ctx.extra.get(k, "") for k in _OV_MULTI})
+    road = svc.validate_limit("road", int(ctx.extra.get("road_limit") or sp.DEFAULT_ROAD_LIMIT))
+    plant = svc.validate_limit("plant", int(ctx.extra.get("plant_limit") or sp.DEFAULT_PLANT_LIMIT))
+    ov = svc.speed_overview(ctx.conn, f, road, plant)
+    t = ov["totals"]
+    trips = svc._scope(ctx.conn, f)
+    ids = svc._ids(trips)
+    fr, to = _day(ctx.date_from), _day(ctx.date_to)
+    scope = [f"Limits: {road} km/h outside plant fences, {plant} km/h inside them (the fences are 10 km circles "
+             "round the works, so the plant zone includes public road near the plant).",
+             f"Trips dispatched from {fr} to {to}, both days whole." if fr and to else
+             "Trips dispatched at any time (no date window).",
+             *ctx.scope_lines(True),
+             f"{_fmt(len(ids))} trips in scope; {_fmt(ov['coverage']['trips_with_gps'])} of them produced GPS."]
+    # The tile and this recount both read the speed rollup, so they agree with
+    # each other; what neither shows is the GPS that arrived after the rollup.
+    b = ov.get("build") or {}
+    if not b.get("built"):
+        scope.append("The speed rollup has never been built: these figures are not measured yet, which is not zero.")
+    else:
+        scope.append(f"Measured to {b['built_at']}: {_fmt(b['pings_covered'])} of {_fmt(b['gps_pings'])} GPS pings "
+                     "scanned" + (f"; {_fmt(b['pings_behind'])} newer pings are not in this figure until the next "
+                                  "speed rollup rebuild." if b.get("stale") else "."))
+    names = {int(r.trip_id): (r.transporter, r.vehicle_no) for r in trips.itertuples() if not _isna(r.trip_id)}
+    if metric in ("episodes", "perday"):
+        ev = svc._events_rows(ctx.conn, ids, road, plant)
+        if metric == "episodes":
+            recs = [] if ev.empty else [
+                {"trip_no": int(r.i_trip_no), "zone": svc.ZONE_LABEL.get(r.s_zone, r.s_zone),
+                 "start": None if _isna(r.dt_start) else str(r.dt_start)[:19],
+                 "peak": int(r.i_peak_kmph), "minutes": _num(r.d_minutes, 1),
+                 "km": round(int(r.i_dist_m) / 1000.0, 2), "carrier": r.s_trans_name, "vehicle": r.s_asset_id}
+                for r in ev.itertuples()]
+            by_zone = {svc.ZONE_LABEL[z]: sum(1 for r in recs if r["zone"] == svc.ZONE_LABEL[z]) for z in ("plant", "road")}
+            page, total = _list_page(ctx, recs, "start")
+            return {"title": "Violation episodes", "format": "int", "value": t["episodes"],
+                    "method": ["An episode is one continuous run of driving above the zone's limit; it is counted "
+                               "when its peak speed is above the limit you picked.", *scope],
+                    "formula": " + ".join(f"{_fmt(n)} ({z})" for z, n in by_zone.items())
+                               + f" = {_fmt(len(recs))} episodes",
+                    "excluded": [], "columns": [
+                        {"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"},
+                        {"key": "zone", "label": "Zone"}, {"key": "start", "label": "Started", "kind": "datetime"},
+                        {"key": "peak", "label": "Peak km/h", "kind": "number"},
+                        {"key": "minutes", "label": "Minutes", "kind": "number", "digits": 1},
+                        {"key": "km", "label": "Km", "kind": "number", "digits": 2},
+                        {"key": "carrier", "label": "Carrier"}, {"key": "vehicle", "label": "Vehicle"}],
+                    "rows": page, "total": total}
+        exposure = svc._daily_exposure(trips)
+        active = set(exposure["date"]) if not exposure.empty else set()
+        if not ev.empty:
+            active |= set(ev["date"].dropna())
+        per_ev = ev["date"].value_counts().to_dict() if not ev.empty else {}
+        exp = {r.date: r for r in exposure.itertuples()} if not exposure.empty else {}
+        recs = [{"date": d, "episodes": int(per_ev.get(d, 0)),
+                 "departures": int(getattr(exp.get(d), "departures", 0) or 0) if d in exp else 0,
+                 "on_road": int(getattr(exp.get(d), "active_trips", 0) or 0) if d in exp else 0,
+                 "why": ("a trip was on the road" if d in exp else "an episode landed on it")}
+                for d in sorted(active)]
+        page, total = _list_page(ctx, recs, "date")
+        days = len(active)
+        return {"title": "Violations per day", "format": "num", "value": t["episodes_per_day"],
+                "method": ["Episodes divided by the days on which something could have been observed: a day a "
+                           "trip in scope was on the road, or a day an episode landed on.", *scope],
+                "formula": (f"{_fmt(t['episodes'])} episodes ÷ {_fmt(days)} day{'s' if days != 1 else ''} = "
+                            f"{_fmt(t['episodes'] / days, 3)}, rounded to {_fmt(t['episodes_per_day'], 1)}"
+                            if days else "no day in scope yet"),
+                "excluded": [], "columns": [
+                    {"key": "date", "label": "Day"}, {"key": "episodes", "label": "Episodes", "kind": "number"},
+                    {"key": "on_road", "label": "Trips on the road", "kind": "number"},
+                    {"key": "departures", "label": "Departures", "kind": "number"},
+                    {"key": "why", "label": "Counted because"}],
+                "rows": page, "total": total}
+    # Time / distance over the limit: the per-trip speed histogram, each trip's
+    # bins above its zone's limit -- the same cached frame the tile sums.
+    hist = svc._trip_speed_frame(ctx.conn, ids)
+    recs, sums = [], {"plant": [0.0, 0], "road": [0.0, 0]}
+    if not hist.empty:
+        lim = hist["s_zone"].map({"plant": plant, "road": road})
+        over = hist[hist["i_kmph"] > lim]
+        g = over.groupby(["i_trip_no", "s_zone"], as_index=False).agg(
+            minutes=("d_minutes", "sum"), dist_m=("i_dist_m", "sum"), pings=("i_pings", "sum"),
+            top=("i_kmph", "max"))
+        for r in g.itertuples():
+            carrier, vehicle = names.get(int(r.i_trip_no), (None, None))
+            recs.append({"trip_no": int(r.i_trip_no), "zone": svc.ZONE_LABEL.get(r.s_zone, r.s_zone),
+                         "minutes": round(float(r.minutes), 2), "km": round(int(r.dist_m) / 1000.0, 3),
+                         "pings": int(r.pings), "top": int(r.top), "carrier": carrier, "vehicle": vehicle})
+            sums[r.s_zone][0] += float(r.minutes)
+            sums[r.s_zone][1] += int(r.dist_m)
+    cols = [{"key": "trip_no", "label": "Trip", "link": "/trips/{trip_no}"}, {"key": "zone", "label": "Zone"},
+            {"key": "minutes", "label": "Minutes over", "kind": "number", "digits": 2},
+            {"key": "km", "label": "Km over", "kind": "number", "digits": 3},
+            {"key": "pings", "label": "Pings over", "kind": "number"},
+            {"key": "top", "label": "Fastest km/h", "kind": "number"},
+            {"key": "carrier", "label": "Carrier"}, {"key": "vehicle", "label": "Vehicle"}]
+    if metric == "overmin":
+        page, total = _list_page(ctx, recs, "minutes")
+        parts = [f"{_fmt(round(sums[z][0], 1), 1)} min ({svc.ZONE_LABEL[z]})" for z in ("plant", "road")]
+        return {"title": "Time over the limit", "format": "min", "value": t["over_minutes"],
+                "method": ["Driving time spent above each zone's limit. Every ping's interval is filed in a 1 km/h "
+                           "speed bin per trip; the bins above the limit are added up.", *scope],
+                "formula": " + ".join(parts) + f" = {_fmt(t['over_minutes'], 1)} min "
+                           "(each zone rounded to 0.1 before adding, as the tile does)",
+                "excluded": [], "columns": cols, "rows": page, "total": total}
+    page, total = _list_page(ctx, recs, "km")
+    parts = [f"{_fmt(round(sums[z][1] / 1000.0, 1), 1)} km ({svc.ZONE_LABEL[z]})" for z in ("plant", "road")]
+    return {"title": "Distance over the limit", "format": "km", "value": t["over_dist_km"],
+            "method": ["Distance driven while above each zone's limit, from the same per-trip speed bins.", *scope],
+            "formula": " + ".join(parts) + f" = {_fmt(t['over_dist_km'], 1)} km "
+                       "(each zone rounded to 0.1 before adding, as the tile does)",
+            "excluded": [], "columns": cols, "rows": page, "total": total}
+
+
+for _m in ("episodes", "perday", "overmin", "overkm"):
+    DATASETS[f"safety.{_m}"] = (lambda m: (lambda ctx: _safety(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
+# Partner profiles (lib/partner_insights.py _detail over a consignor or consignee)
+# ---------------------------------------------------------------------------
+
+def _partner(ctx: Ctx, metric: str) -> dict:
+    kind = ctx.extra.get("kind")
+    with ctx.conn.cursor() as cur:
+        if kind == "consignor":
+            try:
+                cid = int(ctx.extra.get("id", ""))
+            except ValueError:
+                raise HTTPException(400, "id is required")
+            if ctx.scope.active and ctx.scope.id != cid:
+                raise HTTPException(404, "Consignor not in the active scope")
+            cur.execute("SELECT s_cnr_name FROM consignors WHERE i_cnr_id = %s", (cid,))
+            row = cur.fetchone()
+            where, params = "WHERE t.cnr_id = %s", [cid]
+            who = f"consignor {row['s_cnr_name'] if row and row['s_cnr_name'] else f'CNR-{cid}'}"
+        elif kind == "consignee":
+            name = ctx.extra.get("name", "")
+            cur.execute("SELECT id FROM customers WHERE cne_name = %s", (name,))
+            ids = [r["id"] for r in cur.fetchall()] or [-1]
+            where, params, who = f"WHERE t.customer_id IN ({','.join(['%s'] * len(ids))})", list(ids), f"consignee {name}"
+            cnr_clause, cnr_params = base_clause(ctx.scope, "cnr_id", alias="t")
+            if cnr_clause:
+                where += f" AND {cnr_clause}"
+                params += cnr_params
+        else:
+            raise HTTPException(400, "kind must be consignor or consignee")
+    spec = {
+        # metric: (title, format, SQL as partner_insights._detail writes it, column it needs, what it is)
+        "trips": ("Total trips", "int", "COUNT(*)", None, "Each trip counted once."),
+        "otd": ("On-time %", "pct", "ROUND(SUM(t.eta_met) / NULLIF(COUNT(t.eta_met), 0) * 100, 1)", "t.eta_met",
+                "Of the trips with an ETA verdict, the share that met it."),
+        "km": ("Distance", "km", "ROUND(SUM(t.trip_km), 1)", "t.trip_km",
+               "Each trip's distance (trip_km) added up, rounded to 0.1 km."),
+        "speed": ("Average speed", "kmh", "ROUND(AVG(t.avg_speed_kmph), 1)", "t.avg_speed_kmph",
+                  "The mean of each trip's own average speed (every trip weighs the same)."),
+    }
+    title, fmt, expr, need, what = spec[metric]
+    value = _plain(_scalar(ctx, f"SELECT {expr} FROM trips t {where}", params))
+    have = f"{where} AND {need} IS NOT NULL" if need else where
+    n = int(_scalar(ctx, f"SELECT COUNT(*) FROM trips t {have}", params) or 0)
+    everything = int(_scalar(ctx, f"SELECT COUNT(*) FROM trips t {where}", params) or 0)
+    rows, total = _page(ctx, f"{_ENT_SELECT} {_ENT_JOIN} {have}", params, _ENT_SORT, "trip_start")
+    if metric == "trips":
+        formula = f"COUNT(trips) = {_fmt(value)}"
+    elif metric == "otd":
+        met = int(_scalar(ctx, f"SELECT COUNT(*) FROM trips t {where} AND t.eta_met = 1", params) or 0)
+        formula = f"{_fmt(met)} met ÷ {_fmt(n)} judged × 100 = {_fmt(value, 1)}%" if n else "no trip has an ETA verdict yet"
+    elif not n:
+        formula = f"no trip of this partner reports {'a distance' if metric == 'km' else 'an average speed'} yet"
+    else:
+        raw = _plain(_scalar(ctx, f"SELECT {'SUM(t.trip_km)' if metric == 'km' else 'AVG(t.avg_speed_kmph)'} "
+                                  f"FROM trips t {where}", params))
+        formula = (f"{'SUM' if metric == 'km' else 'AVG'} over {_fmt(n)} trips = {_fmt(raw, 3)}, "
+                   f"rounded to {_fmt(value, 1)}")
+    return {"title": title, "format": fmt, "value": value,
+            "method": [what, f"Every trip of {who} in the trip store, all dates.", *ctx.scope_lines(False)],
+            "formula": formula,
+            "excluded": ([{"label": f"Trips without {need.split('.')[1]} (not counted, never read as 0)",
+                           "count": everything - n}] if need and everything - n else []),
+            "columns": _ENT_COLUMNS, "rows": rows, "total": total}
+
+
+for _m in ("trips", "otd", "km", "speed"):
+    DATASETS[f"partner.{_m}"] = (lambda m: (lambda ctx: _partner(ctx, m)))(_m)
+
+
+# ---------------------------------------------------------------------------
 # the endpoint
 # ---------------------------------------------------------------------------
 

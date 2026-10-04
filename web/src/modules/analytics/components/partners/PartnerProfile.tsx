@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { MapPin, Target, Gauge, Clock, Truck, Users, Route as RouteIcon, ChevronRight } from 'lucide-react';
 import KPICard from '../ui/KPICard';
+import { ProofGrid } from '../../../../core/proof/ProofPanel';
 import Badge from '../ui/Badge';
 import ChartCard from '../ui/ChartCard';
 import DonutChart from '../charts/DonutChart';
@@ -21,9 +22,13 @@ const DELIVERY_COLORS: Record<string, string> = {
 const otdClass = (v: number | null) =>
   v == null ? 'text-gray-500' : v >= 95 ? 'text-emerald-400' : v >= 80 ? 'text-amber-400' : 'text-red-400';
 
-export default function PartnerProfile({ detail }: { detail: PartnerDetail }) {
+/** Which partner the tiles describe, so each tile's proof recounts the same trips. */
+export type PartnerKey = { kind: 'consignor'; id: number | string } | { kind: 'consignee'; name: string };
+
+export default function PartnerProfile({ detail, partner }: { detail: PartnerDetail; partner: PartnerKey }) {
   const navigate = useNavigate();
   const k = detail.kpis;
+  const who = partner.kind === 'consignor' ? { kind: 'consignor', id: partner.id } : { kind: 'consignee', name: partner.name };
 
   const delivery = detail.delivery.map(d => ({
     name: d.status, value: d.trips, color: DELIVERY_COLORS[d.status] ?? tc('#3b82f6'),
@@ -32,13 +37,17 @@ export default function PartnerProfile({ detail }: { detail: PartnerDetail }) {
   return (
     <>
       {/* KPIs */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <KPICard label="Total Trips" value={formatNumber(k.trips)} icon={MapPin} color="blue" />
+      <ProofGrid className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <KPICard label="Total Trips" value={formatNumber(k.trips)} icon={MapPin} color="blue"
+          proof={{ dataset: 'partner.trips', params: who, value: k.trips ?? 0 }} />
         <KPICard label="On-Time %" value={formatPercent(k.otd_pct)} icon={Target}
+          proof={{ dataset: 'partner.otd', params: who, value: k.otd_pct ?? null }}
           color={(k.otd_pct ?? 0) >= 90 ? 'green' : (k.otd_pct ?? 0) >= 80 ? 'amber' : 'red'} />
-        <KPICard label="Distance" value={formatDistance(k.total_km)} icon={Truck} color="purple" />
-        <KPICard label="Avg Speed" value={formatSpeed(k.avg_speed)} icon={Gauge} color="cyan" />
-      </div>
+        <KPICard label="Distance" value={formatDistance(k.total_km)} icon={Truck} color="purple"
+          proof={{ dataset: 'partner.km', params: who, value: k.total_km ?? null }} />
+        <KPICard label="Avg Speed" value={formatSpeed(k.avg_speed)} icon={Gauge} color="cyan"
+          proof={{ dataset: 'partner.speed', params: who, value: k.avg_speed ?? null }} />
+      </ProofGrid>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <MiniStat icon={Clock} label="Avg Transit" value={formatDuration(k.avg_duration_min)} />
         <MiniStat icon={RouteIcon} label="Destinations" value={formatNumber(k.destinations)} />

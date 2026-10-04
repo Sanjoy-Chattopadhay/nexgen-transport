@@ -18,8 +18,10 @@ interface Column { key: string; label: string; kind?: 'datetime' | 'number' | 'b
 interface ProofAnswer {
   dataset: string;
   title: string;
-  format: 'int' | 'km' | 'kmh' | 'pct' | 'min' | 'num';
-  value: number | null;
+  format: 'int' | 'km' | 'kmh' | 'pct' | 'min' | 'hours' | 'num' | 'text';
+  value: number | string | null;
+  /** Why the tile can legitimately differ from the recount (a rollup, a stored summary). */
+  differs_note?: string;
   method: string[];
   formula: string;
   excluded: { label: string; count: number }[];
@@ -33,9 +35,11 @@ interface ProofAnswer {
 
 const PAGE_SIZE = 25;
 
-export function formatProofValue(v: number | null | undefined, format: ProofAnswer['format']): string {
+export function formatProofValue(v: number | string | null | undefined, format: ProofAnswer['format']): string {
+  if (typeof v === 'string') return v;
   if (v == null || !Number.isFinite(v)) return '—';
   switch (format) {
+    case 'hours': return `${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })} h`;
     case 'int': return Math.round(v).toLocaleString('en-IN');
     case 'km': return `${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })} km`;
     case 'kmh': return `${v.toLocaleString('en-IN', { maximumFractionDigits: 2 })} km/h`;
@@ -45,7 +49,8 @@ export function formatProofValue(v: number | null | undefined, format: ProofAnsw
   }
 }
 
-function sameValue(a: number | null | undefined, b: number | null | undefined): boolean {
+function sameValue(a: number | string | null | undefined, b: number | string | null | undefined): boolean {
+  if (typeof a === 'string' || typeof b === 'string') return String(a ?? '') === String(b ?? '');
   if (a == null || !Number.isFinite(a)) return b == null || !Number.isFinite(b as number);
   if (b == null || !Number.isFinite(b)) return false;
   return Math.abs(a - b) < 0.005 + Math.abs(a) * 1e-9;
@@ -139,7 +144,8 @@ export function ProofPanel({ open, onClose }: { open: OpenProof; onClose: () => 
               <span className="flex items-center gap-1 text-emerald-400"><CheckCircle2 className="w-4 h-4" /> they agree</span>
             ) : (
               <span className="flex items-center gap-1 text-amber-300">
-                <TriangleAlert className="w-4 h-4" /> they differ: the tile was computed earlier (tiles are cached up to 10 minutes) and newer records are counted here
+                <TriangleAlert className="w-4 h-4" /> they differ: {data.differs_note
+                  ?? 'the tile was computed earlier (tiles are cached up to 10 minutes) and newer records are counted here'}
               </span>
             )}
             <span className="text-gray-600 ml-auto">recounted {data.computed_at.slice(11, 16)}</span>

@@ -7,6 +7,7 @@ import PageContainer from '../components/layout/PageContainer';
 import Spinner from '../components/ui/Spinner';
 import DataTable from '../components/ui/DataTable';
 import KPICard from '../components/ui/KPICard';
+import { ProofGrid } from '../../../core/proof/ProofPanel';
 import Badge from '../components/ui/Badge';
 import ChartCard from '../components/ui/ChartCard';
 import DonutChart from '../components/charts/DonutChart';
@@ -508,9 +509,10 @@ export default function TTAHotspots() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <ProofGrid className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <KPICard
           label="Hotspots in queue" value={formatNumber(kpis?.clusters ?? 0)}
+          proof={{ dataset: 'hotspots.clusters', value: Number(kpis?.clusters ?? 0) }}
           icon={ShieldAlert} color="red"
           drillLabel="List every discovered location"
           onDrill={() => drillClusters(
@@ -520,6 +522,7 @@ export default function TTAHotspots() {
         />
         <KPICard
           label="Stops clustered" value={formatNumber(kpis?.stops ?? 0)}
+          proof={{ dataset: 'hotspots.stops', value: Number(kpis?.stops ?? 0) }}
           icon={MapPin} color="blue"
           drillLabel="List the stops behind this count"
           onDrill={() => drillStops(
@@ -531,6 +534,7 @@ export default function TTAHotspots() {
         />
         <KPICard
           label="Top score" value={kpis?.top_score != null ? Number(kpis.top_score).toFixed(1) : '—'}
+          proof={{ dataset: 'hotspots.top', value: kpis?.top_score != null ? Number(kpis.top_score) : null }}
           icon={Crosshair} color="amber"
           drillLabel="See the stops that earned it"
           onDrill={drillTopScore}
@@ -538,6 +542,7 @@ export default function TTAHotspots() {
         <KPICard
           label="Stop corpus"
           value={formatNumber(status?.corpus?.stops ?? 0)}
+          proof={{ dataset: 'hotspots.corpus', value: Number(status?.corpus?.stops ?? 0) }}
           icon={Truck}
           color="cyan"
           drillLabel="List every extracted stop event"
@@ -548,7 +553,7 @@ export default function TTAHotspots() {
             + ((status?.corpus?.stops ?? 0) > 2000 ? ' · showing the 2,000 most recent' : ''),
           )}
         />
-      </div>
+      </ProofGrid>
 
       {/* Support disclosure: how much history the ranking rests on. */}
       {status && (

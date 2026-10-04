@@ -39,7 +39,7 @@ export default function ConsignorDetail() {
             </div>
           </div>
 
-          <PartnerProfile detail={data} />
+          <PartnerProfile detail={data} partner={{ kind: 'consignor', id: data.id }} />
 
           {/* Consignor-only: who they ship to */}
           <ChartCard title="Top Consignees"

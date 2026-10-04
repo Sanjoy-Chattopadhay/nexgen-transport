@@ -35,7 +35,7 @@ export default function ConsigneeDetail() {
               </p>
             </div>
           </div>
-          <PartnerProfile detail={data} />
+          <PartnerProfile detail={data} partner={{ kind: 'consignee', name: decoded }} />
         </>
       )}
     </PageContainer>
