@@ -194,6 +194,31 @@ services:
         window_hours: 72
       ledger_retention_days: 730
       live_event_retention_days: 30
+      # Plants & congestion (reporting/congestion.py): who was inside a plant
+      # at any moment and when a plant or one of its zones overloaded. Read
+      # from the published run's physical ledger; nothing is stored.
+      congestion:
+        usual_percentile: 90      # the usual level: at or below this share of busy time
+        margin: 0.2               # threshold = usual + max(1, ceil(usual x margin)), at least min_vehicles
+        min_minutes: 15           # an overload must last this long
+        merge_gap_minutes: 10     # overloads closer than this are one
+        min_busy_hours: 6         # less busy time than this and the usual level is "thin"
+        uncertain_gap_s: 600      # a stay whose entry or exit sits in a longer GPS gap is marked uncertain
+        scene_overlap: 0.5        # share of the smaller crowd two overloads must share to be one scene
+        same_place_area_ratio: 2.5   # ... and their fences at most this many times each other's size
+        window_days: 7            # a plant page's default window, back from its last data
+        min_vehicles: { plant: 10, area: 8, gate: 4, weighbridge: 3, parking: 6, loading: 6, road: 4 }
+        # A fence's known capacity replaces its measured threshold: that is a
+        # client fact, so it is the tenant setting `plant_capacity`.
+        # A zone's kind from its name: first rule wins, whole words only.
+        # Campus-scale fences inside a plant are areas whatever their name.
+        zone_kinds:
+          - { kind: weighbridge, words: [WEIGHBRIDGE, WEIGH BRIDGE, WEIGHING, WB, W/B, KANTA, DHARAM KANTA, DHARMKANTA] }
+          - { kind: parking, words: [PARKING, YARD, TRANSPORT NAGAR, TPT NAGAR, HOLDING] }
+          - { kind: area, words: [INSIDE, IN SIDE] }
+          - { kind: gate, words: [GATE, CHECK POST, CHECKPOST, BARRIER, OUT POINT] }
+          - { kind: loading, words: [LOADING, UNLOADING, DOCK, BAY, SHED, SIDING, WHARF] }
+          - { kind: road, words: [ROAD, SIGNAL, TURNING, CROSSING, HIGHWAY] }
 
   routing:
     title: Routes and cost

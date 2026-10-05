@@ -148,7 +148,11 @@ One React app (`web/`), served by the gateway from `web/dist`.
   from Smart-Truck at their original paths.
 * `src/modules/geofence/` — the fence pages (day by day, live map, fences,
   alerts, stops, fence timelines, routes against plans, uploads, data
-  quality, method), ported from Geo-Fencing under `/geo/...`.
+  quality, method), ported from Geo-Fencing under `/geo/...`, and plants &
+  congestion (`/geo/plants`): who was inside each plant at any moment, by
+  zone, and the overloads the scan finds in the published run's physical
+  ledger (nexgen/shared/geoengine/reporting/congestion.py, computed on read,
+  nothing stored).
 
 A section owns every view of its subject from both modules, as tabs (Vehicles:
 the fleet view and the fence-activity view). A trip's three views — summary,

@@ -52,6 +52,26 @@ reaches every service within seconds, and never touches another client.
 Engine settings that decide accuracy (GPS fit, geofence detector) stay
 system-wide in services.yaml, as measured on the 5.1M-fix corpus.
 
+## Plants & congestion
+
+The scan behind Geofences → Plants & congestion (reporting/congestion.py)
+judges every plant and zone against its own traffic. Its rules are
+system-wide, in `services.geofence.settings.congestion`:
+
+| Key | Meaning | Shipped |
+|---|---|---|
+| `usual_percentile` | the usual level: the count a fence is at or below for this share of its busy time | 90 |
+| `margin` | threshold = usual + max(1, ceil(usual × margin)), and at least `min_vehicles` for the kind | 0.2 |
+| `min_minutes`, `merge_gap_minutes` | an overload lasts at least this; closer ones are one | 15, 10 |
+| `min_busy_hours` | below this the usual level is "thin" and only the minimum applies | 6 |
+| `uncertain_gap_s` | a stay whose entry or exit lies in a longer GPS gap is marked uncertain | 600 |
+| `scene_overlap`, `same_place_area_ratio` | when overloads at two drawings of one place are one scene | 0.5, 2.5 |
+| `zone_kinds` | gate / weighbridge / parking / loading / road / area from the fence name, first rule wins | see the file |
+
+A gate's real capacity is the client's to give: `plant_capacity` in the
+tenant file (or the Admin page), by site id, replaces the measured threshold
+for that fence.
+
 ## Production database users
 
 In development one MySQL user serves every schema. In production give each

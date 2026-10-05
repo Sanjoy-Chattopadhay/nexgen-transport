@@ -133,9 +133,10 @@ export const NAV: Band[] = [
     sections: [
       {
         id: 'geofences', module: 'geofencing', label: 'Geofences', icon: Hexagon, path: '/geo/geofences',
-        match: ['/geo/geofences', '/geofence', '/geo/states'],
+        match: ['/geo/geofences', '/geofence', '/geo/states', '/geo/plants'],
         tabs: [
           { path: '/geo/geofences', label: 'Fence master', icon: Hexagon },
+          { path: '/geo/plants', label: 'Plants & congestion', icon: Factory },
           { path: '/geofence', label: 'Detention & delivery proof', icon: ShieldCheck },
           { path: '/geo/states', label: 'States & tolls', icon: Landmark },
         ],

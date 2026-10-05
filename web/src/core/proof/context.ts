@@ -5,8 +5,11 @@
 import { createContext, useContext } from 'react';
 
 export interface ProofSpec {
-  /** A dataset of GET /api/v1/proof/{dataset}. */
+  /** A dataset of GET /api/v1/proof/{dataset} (or of `endpoint`). */
   dataset: string;
+  /** Where the datasets live, under /api/v1: '/proof' (fleet figures, the default) or another
+   * service's proof in the same shape, e.g. '/geo/plants/proof'. */
+  endpoint?: string;
   /** The page's own filters (date window ...); consignor and zonal/local are added for every call. */
   params?: Record<string, string | number | undefined | null>;
   /** The number on the tile, as a number, so the panel can show the recount agrees. */

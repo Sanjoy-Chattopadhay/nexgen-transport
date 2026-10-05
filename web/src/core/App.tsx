@@ -74,6 +74,8 @@ const G = {
   LiveMap: lazy(() => import('../modules/geofence/pages/LiveMap')),
   GeofenceList: lazy(() => import('../modules/geofence/pages/GeofenceList')),
   GeofenceDetail: lazy(() => import('../modules/geofence/pages/GeofenceDetail')),
+  PlantList: lazy(() => import('../modules/geofence/pages/PlantList')),
+  PlantDetail: lazy(() => import('../modules/geofence/pages/PlantDetail')),
   States: lazy(() => import('../modules/geofence/pages/States')),
   TripList: lazy(() => import('../modules/geofence/pages/TripList')),
   TripDetail: lazy(() => import('../modules/geofence/pages/TripDetail')),
@@ -181,6 +183,8 @@ function AppRoutes() {
         <Route path="/geo/live" element={<G.LiveMap />} />
         <Route path="/geo/geofences" element={<G.GeofenceList />} />
         <Route path="/geo/geofences/:siteId" element={<G.GeofenceDetail />} />
+        <Route path="/geo/plants" element={<G.PlantList />} />
+        <Route path="/geo/plants/:siteId" element={<G.PlantDetail />} />
         <Route path="/geo/states" element={<G.States />} />
         <Route path="/geo/trips" element={<G.TripList />} />
         <Route path="/geo/trips/:tripNo" element={<G.TripDetail />} />

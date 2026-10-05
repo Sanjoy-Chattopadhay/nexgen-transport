@@ -46,6 +46,11 @@ cost_rates:
 
 labels: {}
 
+# Plants & congestion: vehicles a fence can hold, by site id, where the plant
+# has said (e.g. { 6246: 6 } for a gate that takes six trucks). It replaces the
+# threshold the scan measures from the fence's own traffic. Empty = measured.
+plant_capacity: {}
+
 # TMS entities (consignor ids) this tenant pulls. Empty = whatever the
 # ingestion lanes are configured with.
 source_entities: []

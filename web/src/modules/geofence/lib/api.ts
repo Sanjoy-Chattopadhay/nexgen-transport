@@ -56,6 +56,10 @@ export const api = {
   geofencesNear: (lat: number, lon: number, radius_m = 1500) =>
     get<any>('/api/v1/geo/geofences-near', { lat, lon, radius_m }),
   rings: (ids: number[]) => get<any>('/api/v1/geo/geofences-rings', { ids: ids.join(',') }),
+  plants: (p?: Params) => get<any>('/api/v1/geo/plants', p),
+  plantScenes: (p: Params) => get<any>('/api/v1/geo/plants/scenes', p),
+  plant: (siteId: string | number, p?: Params) => get<any>(`/api/v1/geo/plants/${siteId}`, p),
+  plantInside: (siteId: string | number, at?: string) => get<any>(`/api/v1/geo/plants/${siteId}/inside`, { at }),
   trips: (p: Params) => get<any>('/api/v1/geo/trips', p),
   trip: (no: string | number) => get<any>(`/api/v1/geo/trips/${no}`),
   tripTrack: (no: string | number) => get<any>(`/api/v1/geo/trips/${no}/track`),

@@ -89,31 +89,33 @@ export function ProofPanel({ open, onClose }: { open: OpenProof; onClose: () => 
     return p;
   }, [open.spec.params]);
 
+  const url = `${open.spec.endpoint ?? '/proof'}/${open.spec.dataset}`;
+
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    backendApi.get(`/proof/${open.spec.dataset}`, { params: { ...params, page, page_size: PAGE_SIZE, sort: sort ?? undefined, order } })
+    backendApi.get(url, { params: { ...params, page, page_size: PAGE_SIZE, sort: sort ?? undefined, order } })
       .then(res => { if (alive) { setData(res.data); setError(null); } })
       .catch(e => { if (alive) setError(e?.response?.data?.detail || e?.message || 'Could not load the proof'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [open.spec.dataset, params, page, sort, order]);
+  }, [url, params, page, sort, order]);
 
   const download = useCallback(async () => {
     setDownloading(true);
     try {
-      const res = await backendApi.get(`/proof/${open.spec.dataset}`, {
+      const res = await backendApi.get(url, {
         params: { ...params, format: 'csv', sort: sort ?? undefined, order }, responseType: 'blob' });
-      const url = URL.createObjectURL(res.data as Blob);
+      const href = URL.createObjectURL(res.data as Blob);
       const a = document.createElement('a');
-      a.href = url;
+      a.href = href;
       a.download = `${open.spec.dataset}.csv`;
       a.click();
-      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(href);
     } finally {
       setDownloading(false);
     }
-  }, [open.spec.dataset, params, sort, order]);
+  }, [url, open.spec.dataset, params, sort, order]);
 
   const pages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
   const tileValue = open.spec.value;
