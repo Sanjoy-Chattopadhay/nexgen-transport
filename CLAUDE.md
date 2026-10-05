@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this project is
 
@@ -72,15 +72,32 @@ python -m nexgen serve fleet         # one service in this process (split mode)
 python -m nexgen migrate             # apply pending migrations (all schemas)
 python -m nexgen migrate --status
 python -m nexgen status | start X | stop X | restart X
+python -m nexgen shutdown            # stop every service and the gateway
 python -m nexgen import-legacy       # copy smart_truck + geofencing in (read-only on them)
-python -m nexgen geo <command>       # the geofencing engine's commands
+python -m nexgen reset               # DROPS NexGen's databases -- never without the user asking
+python -m nexgen geo <command>       # the geofencing engine: run, publish, refresh, summarise, compare, ...
 python -m pytest -q                  # integration tests skip without MySQL
+python -m pytest tests/test_congestion.py::test_threshold_thin_baseline_and_capacity
 npm --prefix web run dev             # :5200, proxies /api to :8100
-npm --prefix web run build           # tsc -b && vite build -> web/dist
+npm --prefix web run typecheck       # tsc -b (there is no lint script)
+npm --prefix web run build           # tsc -b && vite build -> web/dist (what the gateway serves)
 ```
 
-`run.bat` / `stop.bat` do the same on Windows. **Do not kill processes on
-ports 8000, 8001, 8090 or 5173** — the user runs the legacy apps there.
+`run.bat` / `stop.bat` do the same on Windows (`run.bat /build` rebuilds the
+web app, `run.bat /setup` reinstalls everything). **Do not kill processes on
+ports 8000, 8001, 8090 or 5173** — the user runs the legacy apps there — and
+do not stop the user's own NexGen (8100-8107) to test a change: run yours on a
+spare port instead.
+
+`pytest.ini` turns every `DeprecationWarning` into an error, so deprecated
+stdlib calls (e.g. `datetime.utcfromtimestamp`) fail the suite.
+
+A git worktree has no `.env` (it is gitignored), so anything touching MySQL
+fails there with "Access denied ... using password: NO". The config loader
+reads `<repo>/.env` with `override=False`, so exported variables (or
+`load_dotenv` on the main checkout's `.env` before importing `nexgen`) work.
+Code that imports the shared legacy engines outside a running service needs
+`NEXGEN_SERVICE=<service>` (or `legacy_db.use_schema()`) to pick its schema.
 
 ## Layout
 
@@ -99,6 +116,49 @@ ports 8000, 8001, 8090 or 5173** — the user runs the legacy apps there.
 Services: platform 8101, ingestion 8102, fleet 8103, geofence 8104,
 routing 8105, analytics 8106, ml 8107. Each is one process; its worker roles
 are threads that start/stop independently (`/internal/v1/roles/...`).
+
+## How the pieces fit
+
+* **A service** is `nexgen/services/<name>/service.py: build()`, returning a
+  `core.service.Service`: `svc.include(router)` for its API, and
+  `svc.worker("name")` roles holding `.loop(...)` threads, `.consumer(name,
+  [event types], handler)` outbox subscriptions and `.jobs.add(..., cron=)`
+  schedules. The supervisor runs each service as its own process.
+* **Routing**: the gateway sends a request to the service whose
+  `services.yaml` `routes` pattern matches most specifically.
+  `tests/test_gateway_coverage.py` fails when a service serves a path no
+  route reaches — a new router needs a routes entry unless an existing
+  wildcard covers it (`/api/v1/geo/*` does for geofence).
+* **Legacy engines run unchanged** on the new storage: Geo-Fencing's engine
+  (`shared/geoengine`) and Smart-Truck's analysis code read their old table
+  names, which each consumer's `R__aliases.sql` defines as views over the
+  owners' `v1_*` views. The geofence engine is also hosted by routing, so
+  schema choice comes from `legacy_db.current_schema_key()`, not a constant.
+* **Geofence results** belong to a *run* (`geo_run`); pages read the
+  published one via `api/v1/common.resolve_run`. Two ledgers: per-trip
+  (`geo_visit`, `geo_violation`, `geo_stop`) for one consignment's view, and
+  physical (`geo_pvisit`, `geo_palert`, `geo_pstop`, shares in
+  `geo_trip_share`) for anything across trips (pipeline/physical.py). Fence
+  scale is by area (`store.scale_of`: micro < 1 ha, site < 1 km², campus
+  < 100 km², regional). The fence master draws many places more than once,
+  sometimes as identical polygons under several site ids.
+* **Caching**: geofence and routing GET responses are cached per *data
+  version* (`geoengine/api/cache.py` + the `version_cache` middleware; JSON
+  only). A new `/api/v1/geo/` endpoint is cached automatically and goes stale
+  only when the data version moves; in-process models built from a run
+  (e.g. `api/v1/plants.get_model`) key on the same version.
+* **Proof** has three backends, one rule — the server recounts the tile's
+  figure from the records it returns, and the two must agree:
+  fleet pages: `/api/v1/proof/{dataset}` (`services/analytics/proof.py`),
+  shown by `ProofGrid` + `KPICard proof=`; geofence pages:
+  `/api/v1/geo/drill/{dataset}` (`api/v1/drill.py`), shown by `KPIGrid` +
+  `KPI drill=`; plants & congestion: `/api/v1/geo/plants/proof/{dataset}`,
+  through `ProofPanel` with `ProofSpec.endpoint`.
+* **Web**: the geofence module calls the API with `fetch` (`lib/api.ts`,
+  `useApi`, which refetches when the published figures change); the
+  analytics module uses axios `backendApi`, whose interceptors add the
+  consignor and trip-class filters. `PALETTE` is the live theme — read it at
+  render time, never copy it into a constant.
 
 ## Conventions
 
